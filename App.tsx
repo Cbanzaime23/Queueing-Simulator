@@ -15,7 +15,10 @@ import {
     CustomerLogEntry,
     ChartDataPoint,
     Environment,
-    SkillType
+    SkillType,
+    Customer,
+    SimulationEventType,
+    SimulationEvent
 } from './types';
 import { SimulationEngine } from './SimulationEngine';
 import MetricsCard from './components/MetricsCard';
@@ -35,6 +38,7 @@ import {
   Area,
   ComposedChart,
   Bar,
+  BarChart,
   ReferenceLine
 } from 'recharts';
 
@@ -46,6 +50,17 @@ const { useState, useEffect, useRef, useCallback, useMemo } = React;
  */
 const MAX_HISTORY_POINTS = 100;
 const SCENARIO_COLORS = ['#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#6366f1'];
+
+interface FloatingEffect {
+    id: string;
+    x: number; // Percent
+    y: number; // Percent
+    icon: string;
+    label: string;
+    color: string;
+    timestamp: number;
+    serverId?: number; // If attached to a specific server
+}
 
 /**
  * Helper to get icon for skill
@@ -74,12 +89,66 @@ const getSkillColor = (skill: SkillType) => {
 };
 
 /**
+ * Helper: Calculate Dynamic Mood Color
+ * Interpolates Green -> Yellow -> Red based on wait time vs patience
+ */
+const getCustomerMoodStyle = (
+    customer: Customer, 
+    currentTime: number, 
+    impatientMode: boolean, 
+    avgPatienceTime: number
+): { style: React.CSSProperties, className: string } => {
+    
+    // Fallback if impatient mode is off: Use static type color
+    if (!impatientMode) {
+        return { style: {}, className: customer.color };
+    }
+
+    const waitedTime = currentTime - customer.arrivalTime;
+    const patienceLimit = customer.patienceTime || avgPatienceTime;
+    
+    // Calculate Anger Ratio (0.0 to 1.0)
+    // We cap it at 1.0 (Renege point) but visualizing slightly over is fine if they stick around
+    const ratio = Math.min(1.0, waitedTime / patienceLimit);
+    
+    // Interpolation Logic
+    // Green (Happy): rgb(34, 197, 94) -> Tailwind green-500
+    // Yellow (Annoyed): rgb(234, 179, 8) -> Tailwind yellow-500
+    // Red (Angry): rgb(239, 68, 68) -> Tailwind red-500
+    
+    let r, g, b;
+
+    if (ratio < 0.5) {
+        // Green to Yellow (0 -> 0.5 maps to 0 -> 1)
+        const t = ratio * 2;
+        r = 34 + (234 - 34) * t;
+        g = 197 + (179 - 197) * t;
+        b = 94 + (8 - 94) * t;
+    } else {
+        // Yellow to Red (0.5 -> 1.0 maps to 0 -> 1)
+        const t = (ratio - 0.5) * 2;
+        r = 234 + (239 - 234) * t;
+        g = 179 + (68 - 179) * t;
+        b = 8 + (68 - 8) * t;
+    }
+
+    // Add Shake animation if very angry (> 90%)
+    const isAngry = ratio > 0.9;
+    
+    return {
+        style: { backgroundColor: `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})` },
+        className: isAngry ? 'animate-stress' : ''
+    };
+};
+
+
+/**
  * Main Application Component.
  * Orchestrates the Queueing Simulator, Theoretical Calculations, and UI Rendering.
  */
 export const App: React.FC = () => {
   // --- GLOBAL MODE STATE ---
-  const [appMode, setAppMode] = useState<'SINGLE' | 'NETWORK' | 'DATALAB'>('SINGLE');
+  const [appMode, setAppMode] = useState<string>('SINGLE');
 
   // --- CONFIGURATION STATE (Single Queue) ---
   const [environment, setEnvironment] = useState<Environment>(Environment.BANK);
@@ -165,6 +234,7 @@ export const App: React.FC = () => {
   // Resource Config
   const [serverCountInput, setServerCountInput] = useState<number>(3);
   const [capacityK, setCapacityK] = useState<number>(10);
+  const [populationSize, setPopulationSize] = useState<number>(50); // For MMS_N_POP
   const [simSpeed, setSimSpeed] = useState<number>(5);
 
   // Operation Config (Day Simulation)
@@ -182,6 +252,9 @@ export const App: React.FC = () => {
 
   // UI Local State
   const [editingServerId, setEditingServerId] = useState<number | null>(null);
+  
+  // Floating Reaction System State
+  const [floatingEffects, setFloatingEffects] = useState<FloatingEffect[]>([]);
 
   // --- DERIVED STATE ---
   const [theoretical, setTheoretical] = useState<TheoreticalMetrics | null>(null);
@@ -203,6 +276,14 @@ export const App: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(true);
   const [dayComplete, setDayComplete] = useState<boolean>(false);
   const lastUpdateRef = useRef<number>(0);
+
+  // Determine which state to display (Live vs Historical)
+  const displayState = useMemo(() => {
+      return scrubbedSnapshot || simState;
+  }, [scrubbedSnapshot, simState]);
+
+  // Use displayState or simState for active state logic
+  const activeState = displayState || simState;
 
   // Handle Environment Changes
   const handleEnvironmentChange = (newEnv: Environment) => {
@@ -258,6 +339,7 @@ export const App: React.FC = () => {
       avgServiceTime: serviceTimeInput,
       serverCount: serverCountInput,
       capacity: capacityK,
+      populationSize,
       arrivalType,
       arrivalK: erlangK,
       serviceType,
@@ -293,7 +375,7 @@ export const App: React.FC = () => {
       skillRatios: skillRatios as any,
       retrialMode,
       avgRetrialDelay
-  }), [selectedModel, lambdaInput, serviceTimeInput, serverCountInput, capacityK, arrivalType, erlangK, serviceType, erlangServiceK, openHour, closeHour, vipProbability, impatientMode, balkThreshold, avgPatienceTime, useDynamicMode, arrivalSchedule, serverSchedule, efficiencyMode, seniorityRatio, serverSelectionStrategy, breakdownMode, mtbf, mttr, queueTopology, jockeyingEnabled, bulkArrivalMode, minGroupSize, maxGroupSize, batchServiceMode, maxBatchSize, traceData, slTargetSec, stateDependentMode, panicThreshold, panicEfficiencyMultiplier, skillBasedRouting, skillRatios, retrialMode, avgRetrialDelay]);
+  }), [selectedModel, lambdaInput, serviceTimeInput, serverCountInput, capacityK, populationSize, arrivalType, erlangK, serviceType, erlangServiceK, openHour, closeHour, vipProbability, impatientMode, balkThreshold, avgPatienceTime, useDynamicMode, arrivalSchedule, serverSchedule, efficiencyMode, seniorityRatio, serverSelectionStrategy, breakdownMode, mtbf, mttr, queueTopology, jockeyingEnabled, bulkArrivalMode, minGroupSize, maxGroupSize, batchServiceMode, maxBatchSize, traceData, slTargetSec, stateDependentMode, panicThreshold, panicEfficiencyMultiplier, skillBasedRouting, skillRatios, retrialMode, avgRetrialDelay]);
 
   /**
    * Initialize or Reset Simulation
@@ -311,6 +393,7 @@ export const App: React.FC = () => {
     setSimState({ ...engineRef.current.getState() });
     setDayComplete(false);
     setScrubbedSnapshot(null); // Clear any scrub state
+    setFloatingEffects([]); // Clear effects
     lastUpdateRef.current = performance.now();
   }, [getSimConfig]);
 
@@ -421,7 +504,7 @@ export const App: React.FC = () => {
     // Note: Theoretical metrics only apply to the STATIC input values. 
     // In dynamic mode, these serve as a "Reference Point" for the sliders.
     const metrics = calculateTheoreticalMetrics(
-      lambdaInput, mu, serverCountInput, selectedModel, capacityK, 
+      lambdaInput, mu, serverCountInput, selectedModel, capacityK, populationSize,
       arrivalType, erlangK, serviceType, erlangServiceK, avgEff, 
       breakdownMode, mtbf, mttr
     );
@@ -431,7 +514,7 @@ export const App: React.FC = () => {
     if (engineRef.current) {
         engineRef.current.updateConfig(getSimConfig());
     }
-  }, [lambdaInput, serviceTimeInput, serverCountInput, selectedModel, capacityK, arrivalType, erlangK, serviceType, erlangServiceK, openHour, closeHour, vipProbability, impatientMode, balkThreshold, avgPatienceTime, useDynamicMode, arrivalSchedule, serverSchedule, efficiencyMode, seniorityRatio, serverSelectionStrategy, breakdownMode, mtbf, mttr, queueTopology, jockeyingEnabled, bulkArrivalMode, minGroupSize, maxGroupSize, batchServiceMode, maxBatchSize, getSimConfig, traceData, slTargetSec, stateDependentMode, panicThreshold, panicEfficiencyMultiplier, skillBasedRouting, skillRatios, retrialMode, avgRetrialDelay]);
+  }, [lambdaInput, serviceTimeInput, serverCountInput, selectedModel, capacityK, populationSize, arrivalType, erlangK, serviceType, erlangServiceK, openHour, closeHour, vipProbability, impatientMode, balkThreshold, avgPatienceTime, useDynamicMode, arrivalSchedule, serverSchedule, efficiencyMode, seniorityRatio, serverSelectionStrategy, breakdownMode, mtbf, mttr, queueTopology, jockeyingEnabled, bulkArrivalMode, minGroupSize, maxGroupSize, batchServiceMode, maxBatchSize, getSimConfig, traceData, slTargetSec, stateDependentMode, panicThreshold, panicEfficiencyMultiplier, skillBasedRouting, skillRatios, retrialMode, avgRetrialDelay]);
 
   // Initial load
   useEffect(() => {
@@ -460,6 +543,43 @@ export const App: React.FC = () => {
       const state = engine.getState();
       setSimState({ ...state });
       
+      // --- EVENT PROCESSING FOR FLOATING EFFECTS ---
+      if (state.events && state.events.length > 0) {
+          const newEffects: FloatingEffect[] = state.events.map(evt => {
+              const baseEffect = {
+                  id: evt.id,
+                  timestamp: performance.now(),
+              };
+
+              switch(evt.type) {
+                  case SimulationEventType.VIP_ARRIVAL:
+                      return { ...baseEffect, icon: 'fa-crown', label: 'VIP Arrival!', color: 'text-amber-500', x: 10, y: 50 };
+                  case SimulationEventType.RENEGE:
+                      return { ...baseEffect, icon: 'fa-person-walking-arrow-right', label: 'Reneged', color: 'text-rose-500', x: 50, y: 80 };
+                  case SimulationEventType.BALK:
+                      return { ...baseEffect, icon: 'fa-ban', label: 'Balked', color: 'text-red-500', x: 10, y: 80 };
+                  case SimulationEventType.ORBIT_ENTRY:
+                      return { ...baseEffect, icon: 'fa-rotate-right', label: 'To Orbit', color: 'text-cyan-500', x: 50, y: 20 };
+                  case SimulationEventType.ORBIT_RETRY:
+                      return { ...baseEffect, icon: 'fa-arrow-down', label: 'Retrying', color: 'text-blue-500', x: 50, y: 10 };
+                  case SimulationEventType.BREAKDOWN:
+                      return { ...baseEffect, icon: 'fa-triangle-exclamation', label: 'Breakdown!', color: 'text-red-600', x: 0, y: 0, serverId: typeof evt.entityId === 'number' ? evt.entityId : undefined };
+                  case SimulationEventType.REPAIR:
+                      return { ...baseEffect, icon: 'fa-wrench', label: 'Repaired', color: 'text-green-500', x: 0, y: 0, serverId: typeof evt.entityId === 'number' ? evt.entityId : undefined };
+                  default:
+                      return { ...baseEffect, icon: 'fa-info', label: 'Event', color: 'text-slate-500', x: 50, y: 50 };
+              }
+          });
+          setFloatingEffects(prev => [...prev, ...newEffects]);
+      }
+
+      // Cleanup old effects
+      setFloatingEffects(prev => {
+          const now = performance.now();
+          // Keep effects for 2 seconds
+          return prev.filter(e => now - e.timestamp < 2000);
+      });
+
       // If we are actively scrubbing (scrubbedSnapshot is set),
       // we do NOT update scrubbedSnapshot here, so the user sees frozen history while simulation runs in background.
 
@@ -536,7 +656,8 @@ export const App: React.FC = () => {
                 recentlyDeparted: [], // Clear animation ghosts when scrubbing
                 recentlyBalked: [], // Clear animation ghosts
                 orbit: payload.visualSnapshot.orbit || [], // Fallback for old history
-                history: simState.history // Keep history for context
+                history: simState.history, // Keep history for context
+                events: [] // No events for historical snapshot
             };
             setScrubbedSnapshot(tempState);
         }
@@ -546,11 +667,6 @@ export const App: React.FC = () => {
   const handleChartLeave = useCallback(() => {
       setScrubbedSnapshot(null);
   }, []);
-
-  // Determine which state to display (Live vs Historical)
-  const displayState = useMemo(() => {
-      return scrubbedSnapshot || simState;
-  }, [scrubbedSnapshot, simState]);
 
   // Helper for safe access
   const avgWaitSim = displayState && displayState.statsWq.count > 0 ? displayState.statsWq.sum / displayState.statsWq.count : 0;
@@ -599,34 +715,90 @@ export const App: React.FC = () => {
     return Array.from(dataMap.values()).sort((a, b) => a.time - b.time);
   }, [simState?.history, savedScenarios]);
 
+  // Prepare Gantt Data
+  const ganttData = useMemo(() => {
+      if (!activeState) return [];
+      
+      // Use activeState to support time travel/scrubbing
+      // Filter customers who have finished by the current display time
+      // Limiting to last 30 for clear visualization of "ripple" on screen
+      const finished = activeState.completedCustomers.filter(c => c.finishTime <= activeState.currentTime);
+      const recent = finished.slice(-30); 
+      
+      return recent.map((c, i) => ({
+          uniqueKey: c.id,
+          displayId: `#${finished.length - recent.length + i + 1}`, // Sequential ID
+          arrivalOffset: c.arrivalTime, 
+          wait: c.waitTime,
+          service: c.serviceTime,
+          type: c.type,
+          // Formatted times for tooltip
+          tooltipArrival: formatTime(openHour + c.arrivalTime/60),
+          tooltipStart: formatTime(openHour + c.startTime/60),
+          tooltipEnd: formatTime(openHour + c.finishTime/60)
+      }));
+  }, [activeState, openHour]);
+
   // --- DOCUMENTATION GENERATION ---
   const modelNotation = useMemo(() => {
     const a = arrivalType === DistributionType.POISSON ? 'M' : arrivalType === DistributionType.DETERMINISTIC ? 'D' : arrivalType === DistributionType.TRACE ? 'Trace' : arrivalType === DistributionType.ERLANG ? `E${erlangK}` : 'G';
     const s = serviceType === DistributionType.POISSON ? 'M' : serviceType === DistributionType.DETERMINISTIC ? 'D' : serviceType === DistributionType.TRACE ? 'Trace' : serviceType === DistributionType.ERLANG ? `E${erlangServiceK}` : 'G';
     const servers = selectedModel === QueueModel.MMINF ? '∞' : selectedModel === QueueModel.MM1 ? '1' : (useDynamicMode ? 's(t)' : serverCountInput);
-    const capacity = selectedModel === QueueModel.MMSK ? `/${capacityK}` : '';
     
+    let suffix = '';
+    if (selectedModel === QueueModel.MMSK) suffix = `/${capacityK} (Cap)`;
+    if (selectedModel === QueueModel.MMS_N_POP) suffix = `//${populationSize} (Pop)`;
+
     // Notation for Bulk/Batch
     const bulk = bulkArrivalMode ? `^(${minGroupSize},${maxGroupSize})` : '';
     const batch = batchServiceMode ? `^(1,${maxBatchSize})` : '';
 
-    return `${a}${bulk}/${s}${batch}/${servers}${capacity}`;
-  }, [arrivalType, serviceType, selectedModel, serverCountInput, capacityK, erlangK, erlangServiceK, useDynamicMode, bulkArrivalMode, minGroupSize, maxGroupSize, batchServiceMode, maxBatchSize]);
+    return `${a}${bulk}/${s}${batch}/${servers}${suffix}`;
+  }, [arrivalType, serviceType, selectedModel, serverCountInput, capacityK, populationSize, erlangK, erlangServiceK, useDynamicMode, bulkArrivalMode, minGroupSize, maxGroupSize, batchServiceMode, maxBatchSize]);
 
   const documentationContent = useMemo(() => {
-    let validityDesc = "Results are based on standard steady-state queueing theory.";
-    const isGGS = arrivalType !== DistributionType.POISSON || serviceType !== DistributionType.POISSON;
+    const assumptions: string[] = [];
     
-    if (arrivalType === DistributionType.TRACE || serviceType === DistributionType.TRACE) {
-        validityDesc = "Trace Mode Active: Simulation is replaying historical data. Analytical formulas are disabled as the input distribution is empirical.";
-    } else if (useDynamicMode) {
-        validityDesc = "Dynamic Mode Active: Stationary steady-state formulas do not apply. Simulation results reflect transient behavior of time-varying parameters.";
-    } else if (theoretical?.rho && theoretical.rho >= 1) {
-       validityDesc = "SYSTEM UNSTABLE. Traffic intensity ρ ≥ 1. Steady-state formulas do not apply. Simulation will show unbounded queue growth.";
-    } else if (selectedModel === QueueModel.MMSK && isGGS) {
-       validityDesc = "G/G/s/K metrics are heuristic approximations. Simulation results should be prioritized.";
-    } else if (bulkArrivalMode || batchServiceMode) {
-       validityDesc = "Bulk/Batch modes active. Standard M/M/s formulas are not applicable approximations. Rely on simulation stats.";
+    // 1. Model Assumptions
+    if (selectedModel === QueueModel.MMS_N_POP) {
+        assumptions.push(`Finite Calling Population (N=${populationSize}): Arrival rate decreases as more customers enter.`);
+    } else {
+        assumptions.push("Infinite Calling Population: Arrivals do not deplete the source pool.");
+    }
+
+    if (selectedModel === QueueModel.MMSK) {
+        assumptions.push(`Finite System Capacity (K=${capacityK}): Arrivals when full are blocked (Loss System).`);
+    } else {
+        assumptions.push("Infinite Queue Capacity: No blocking limit.");
+    }
+
+    // 2. Process Assumptions
+    if (arrivalType === DistributionType.POISSON) {
+        assumptions.push("Arrivals: Independent, Memoryless (Poisson Process).");
+    } else if (arrivalType === DistributionType.TRACE) {
+        assumptions.push("Arrivals: Replay of historical trace data (Empirical).");
+    }
+
+    if (serviceType === DistributionType.POISSON) {
+        assumptions.push("Service: Independent, Memoryless (Exponential).");
+    }
+
+    // 3. Logic Assumptions
+    if (impatientMode) assumptions.push("Impatience: Customers renege if wait > patience threshold.");
+    if (vipProbability > 0) assumptions.push("Priority: VIP customers bypass standard queue.");
+    if (bulkArrivalMode) assumptions.push(`Bulk Arrivals: Groups of ${minGroupSize}-${maxGroupSize} arrive together.`);
+    if (batchServiceMode) assumptions.push(`Batch Service: Servers process up to ${maxBatchSize} customers at once.`);
+
+    // 4. Limitations / Scope
+    const limitations: string[] = [];
+    if (useDynamicMode) {
+        limitations.push("Dynamic Mode: System is Non-Stationary. Steady-state formulas do not apply.");
+    } else if (theoretical?.isStable === false) {
+        limitations.push("UNSTABLE: Traffic intensity ρ ≥ 1. Queue grows indefinitely.");
+    } else if (theoretical?.isApproximate) {
+        limitations.push(`Approximation: ${theoretical.approxNote}`);
+    } else {
+        limitations.push("Scope: Valid for steady-state equilibrium.");
     }
 
     return {
@@ -634,8 +806,10 @@ export const App: React.FC = () => {
         title: "Arrival Process",
         desc: useDynamicMode 
             ? "Non-Stationary Process λ(t). Arrival rates vary hourly according to the user-defined schedule."
+            : selectedModel === QueueModel.MMS_N_POP
+            ? `Finite Population (N=${populationSize}). State-dependent arrival rate.`
             : arrivalType === DistributionType.POISSON 
-            ? "Independent Poisson arrivals (Markovian). Inter-arrival times are Exponentially distributed."
+            ? "Independent Poisson arrivals (Markovian)."
             : `User defined: ${arrivalType}`
       },
       service: {
@@ -648,18 +822,22 @@ export const App: React.FC = () => {
       },
       discipline: {
         title: "Queue Discipline",
-        desc: "FIFO" + (vipProbability > 0 ? " with Priority" : "") + (impatientMode ? " + Balking/Reneging" : "")
+        desc: "FIFO" + (vipProbability > 0 ? " + Priority" : "") + (impatientMode ? " + Balking/Reneging" : "")
       },
-      validity: {
-        title: "Validity & Limitations",
-        desc: validityDesc
+      scope: {
+          items: [...assumptions, ...limitations]
       }
     };
-  }, [arrivalType, serviceType, selectedModel, erlangK, erlangServiceK, theoretical, capacityK, vipProbability, serverCountInput, useDynamicMode, impatientMode, bulkArrivalMode, batchServiceMode]);
+  }, [arrivalType, serviceType, selectedModel, erlangK, erlangServiceK, theoretical, capacityK, populationSize, vipProbability, serverCountInput, useDynamicMode, impatientMode, bulkArrivalMode, batchServiceMode, minGroupSize, maxGroupSize, maxBatchSize]);
 
-  // Formatter for Chart X-Axis
+  // Formatter for Chart X-Axis (Input: Hours since start)
   const xAxisFormatter = (timeValue: number) => {
     return formatTime(openHour + timeValue);
+  };
+
+  // Formatter for Minutes X-Axis (Input: Minutes since start)
+  const xAxisFormatterMinutes = (timeValue: number) => {
+    return formatTime(openHour + (timeValue / 60));
   };
 
   // Label Helpers
@@ -688,7 +866,7 @@ export const App: React.FC = () => {
   if (appMode === 'NETWORK') {
       return (
           <div className="min-h-screen p-4 bg-slate-100">
-               <header className="mb-4 flex items-center justify-between">
+               <header className="mb-4 flex flex-col md:flex-row md:items-end justify-between gap-4">
                     <div>
                         <h1 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
                             <i className="fa-solid fa-diagram-project text-purple-600"></i>
@@ -696,10 +874,10 @@ export const App: React.FC = () => {
                         </h1>
                         <p className="text-xs text-slate-500">Design multi-stage stochastic networks</p>
                     </div>
-                    <div className="bg-white rounded-full p-1 border shadow-sm flex">
-                        <button onClick={() => setAppMode('SINGLE')} className="px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Single Node</button>
-                        <button onClick={() => setAppMode('NETWORK')} className="px-4 py-1 rounded-full text-xs font-bold text-white bg-purple-600 shadow-sm">Network Mode</button>
-                        <button onClick={() => setAppMode('DATALAB')} className="px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Data Lab</button>
+                    <div className="bg-white rounded-full p-1 border shadow-sm flex overflow-x-auto max-w-full">
+                        <button onClick={() => setAppMode('SINGLE')} className="whitespace-nowrap px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Single Node</button>
+                        <button onClick={() => setAppMode('NETWORK')} className="whitespace-nowrap px-4 py-1 rounded-full text-xs font-bold text-white bg-purple-600 shadow-sm">Network Mode</button>
+                        <button onClick={() => setAppMode('DATALAB')} className="whitespace-nowrap px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Data Lab</button>
                     </div>
                </header>
                <NetworkSimulator />
@@ -710,7 +888,7 @@ export const App: React.FC = () => {
   if (appMode === 'DATALAB') {
       return (
           <div className="min-h-screen p-4 bg-slate-100">
-               <header className="mb-4 flex items-center justify-between">
+               <header className="mb-4 flex flex-col md:flex-row md:items-end justify-between gap-4">
                     <div>
                         <h1 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
                             <i className="fa-solid fa-flask text-purple-600"></i>
@@ -718,10 +896,10 @@ export const App: React.FC = () => {
                         </h1>
                         <p className="text-xs text-slate-500">Analyze raw data and prepare traces</p>
                     </div>
-                    <div className="bg-white rounded-full p-1 border shadow-sm flex">
-                        <button onClick={() => setAppMode('SINGLE')} className="px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Single Node</button>
-                        <button onClick={() => setAppMode('NETWORK')} className="px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Network Mode</button>
-                        <button onClick={() => setAppMode('DATALAB')} className="px-4 py-1 rounded-full text-xs font-bold text-white bg-purple-600 shadow-sm">Data Lab</button>
+                    <div className="bg-white rounded-full p-1 border shadow-sm flex overflow-x-auto max-w-full">
+                        <button onClick={() => setAppMode('SINGLE')} className="whitespace-nowrap px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Single Node</button>
+                        <button onClick={() => setAppMode('NETWORK')} className="whitespace-nowrap px-4 py-1 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50">Network Mode</button>
+                        <button onClick={() => setAppMode('DATALAB')} className="whitespace-nowrap px-4 py-1 rounded-full text-xs font-bold text-white bg-purple-600 shadow-sm">Data Lab</button>
                     </div>
                </header>
                <DataLab onDataLoaded={handleTraceDataLoaded} />
@@ -733,13 +911,9 @@ export const App: React.FC = () => {
 
   if (!simState) return <div className="min-h-screen flex items-center justify-center text-slate-500">Initializing Engine...</div>;
 
-  // IMPORTANT: Use displayState instead of simState for visual rendering to support scrubbing
-  // If displayState is null (rare race condition during reset), fallback to simState
-  const activeState = displayState || simState;
-
   return (
     <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
-      {/* Custom Styles for Balk Animation */}
+      {/* ... [Styles omitted for brevity, they remain unchanged] ... */}
       <style>{`
         @keyframes balkShake {
           0% { transform: translateX(0); opacity: 1; }
@@ -792,54 +966,70 @@ export const App: React.FC = () => {
       `}</style>
 
       {/* Header */}
-      <header className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
+      <header className="mb-8 flex flex-col xl:flex-row xl:items-end justify-between gap-4">
+        {/* ... [Header content unchanged] ... */}
         <div>
-          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+          <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
             <i className="fa-solid fa-building-columns text-blue-600"></i>
-            Queueing Simulator Pro <span className="text-blue-500 font-normal">v3.5</span>
+            Queueing Simulator Pro <span className="text-blue-500 font-normal">v3.7</span>
           </h1>
-          <p className="text-slate-500 mt-1">Multi-Distribution Analytical Validation & Dynamic Staffing</p>
+          <p className="text-slate-500 mt-1 text-sm md:text-base">Finite Population Support & Advanced Analytical Validation</p>
         </div>
         
-        <div className="flex gap-4 items-center">
+        <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
             {/* Mode Switcher */}
-            <div className="bg-white rounded-full p-1 border shadow-sm flex">
-                <button onClick={() => setAppMode('SINGLE')} className="px-4 py-2 rounded-full text-xs font-bold text-white bg-blue-600 shadow-sm transition-all">Single Node</button>
-                <button onClick={() => setAppMode('NETWORK')} className="px-4 py-2 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50 transition-all">Network Mode</button>
-                <button onClick={() => setAppMode('DATALAB')} className="px-4 py-2 rounded-full text-xs font-bold text-slate-500 hover:bg-slate-50 transition-all">Data Lab</button>
+            <div className="bg-white rounded-full p-1 border shadow-sm flex overflow-x-auto max-w-full">
+                <button 
+                    onClick={() => setAppMode('SINGLE')} 
+                    className={`whitespace-nowrap px-3 md:px-4 py-2 rounded-full text-[10px] md:text-xs font-bold transition-all ${appMode === 'SINGLE' ? 'text-white bg-blue-600 shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                    Single Node
+                </button>
+                <button 
+                    onClick={() => setAppMode('NETWORK')} 
+                    className={`whitespace-nowrap px-3 md:px-4 py-2 rounded-full text-[10px] md:text-xs font-bold transition-all ${appMode === 'NETWORK' ? 'text-white bg-purple-600 shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                    Network Mode
+                </button>
+                <button 
+                    onClick={() => setAppMode('DATALAB')} 
+                    className={`whitespace-nowrap px-3 md:px-4 py-2 rounded-full text-[10px] md:text-xs font-bold transition-all ${appMode === 'DATALAB' ? 'text-white bg-pink-600 shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                    Data Lab
+                </button>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
             
             {/* Snapshot Button */}
             <button 
                 onClick={handleSnapshot} 
-                className="px-4 py-2 rounded-lg font-bold text-white bg-indigo-500 hover:bg-indigo-600 transition-all shadow-md flex items-center gap-2"
+                className="px-3 md:px-4 py-2 rounded-lg font-bold text-white bg-indigo-500 hover:bg-indigo-600 transition-all shadow-md flex items-center gap-2 text-xs md:text-sm whitespace-nowrap"
                 title="Save current metrics as a scenario for comparison"
             >
-                <i className="fa-solid fa-camera"></i> Snapshot
+                <i className="fa-solid fa-camera"></i> <span>Snapshot</span>
             </button>
 
             {/* Export Button */}
             <button 
                 onClick={handleExportReport} 
-                className="px-4 py-2 rounded-lg font-bold text-white bg-emerald-500 hover:bg-emerald-600 transition-all shadow-md flex items-center gap-2"
+                className="px-3 md:px-4 py-2 rounded-lg font-bold text-white bg-emerald-500 hover:bg-emerald-600 transition-all shadow-md flex items-center gap-2 text-xs md:text-sm"
                 title="Download Simulation Data (CSV)"
             >
-                <i className="fa-solid fa-file-csv"></i> Export
+                <i className="fa-solid fa-file-csv"></i> <span className="hidden md:inline">Export</span>
             </button>
 
             {!dayComplete ? (
-                <button onClick={() => setIsPaused(!isPaused)} className={`px-6 py-2 rounded-lg font-bold text-white transition-all shadow-md flex items-center gap-2 ${isPaused ? 'bg-green-600 hover:bg-green-700' : 'bg-amber-500 hover:bg-amber-600'}`}>
-                <i className={`fa-solid ${isPaused ? 'fa-play' : 'fa-pause'}`}></i> {isPaused ? 'Resume' : 'Pause'}
+                <button onClick={() => setIsPaused(!isPaused)} className={`px-4 md:px-6 py-2 rounded-lg font-bold text-white transition-all shadow-md flex items-center gap-2 text-xs md:text-sm ${isPaused ? 'bg-green-600 hover:bg-green-700' : 'bg-amber-500 hover:bg-amber-600'}`}>
+                <i className={`fa-solid ${isPaused ? 'fa-play' : 'fa-pause'}`}></i> <span className="hidden sm:inline">{isPaused ? 'Resume' : 'Pause'}</span>
                 </button>
             ) : (
-                <div className="px-6 py-2 rounded-lg font-bold text-white bg-slate-700 flex items-center gap-2 shadow-md cursor-default">
+                <div className="px-4 md:px-6 py-2 rounded-lg font-bold text-white bg-slate-700 flex items-center gap-2 shadow-md cursor-default text-xs md:text-sm whitespace-nowrap">
                 <i className="fa-solid fa-check-circle"></i> Day Complete
                 </div>
             )}
-            <button onClick={resetSimulation} className="px-6 py-2 rounded-lg font-bold text-slate-700 bg-slate-200 hover:bg-slate-300 transition-all flex items-center gap-2">
-                <i className="fa-solid fa-rotate-left"></i> Reset
+            <button onClick={resetSimulation} className="px-4 md:px-6 py-2 rounded-lg font-bold text-slate-700 bg-slate-200 hover:bg-slate-300 transition-all flex items-center gap-2 text-xs md:text-sm">
+                <i className="fa-solid fa-rotate-left"></i> <span className="hidden sm:inline">Reset</span>
             </button>
             </div>
         </div>
@@ -849,6 +1039,7 @@ export const App: React.FC = () => {
         {/* Left Column: Configuration Controls */}
         <section className="lg:col-span-1 space-y-6">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            {/* ... [Configuration content unchanged] ... */}
             <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">Model Configuration</h2>
             
             {/* Environment Selector */}
@@ -912,8 +1103,9 @@ export const App: React.FC = () => {
                 <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value as QueueModel)} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none">
                   <option value={QueueModel.MM1}>M/M/1 (Single {getResourceName().slice(0, -1)})</option>
                   <option value={QueueModel.MMS}>M/M/s (Multiple {getResourceName()})</option>
-                  <option value={QueueModel.MMINF}>M/M/inf (Infinite {getResourceName()})</option>
-                  <option value={QueueModel.MMSK}>M/M/s/K (Finite Capacity)</option>
+                  <option value={QueueModel.MMSK}>M/M/s/N (Finite Capacity / M/M/s/K)</option>
+                  <option value={QueueModel.MMS_N_POP}>M/M/s/N/N (Finite Population / Repair)</option>
+                  <option value={QueueModel.MMINF}>M/M/inf (Infinite / G/G/∞)</option>
                 </select>
               </div>
 
@@ -950,12 +1142,16 @@ export const App: React.FC = () => {
                               <input type="range" min="1" max="10" value={erlangK} onChange={(e) => setErlangK(Number(e.target.value))} className="w-20 accent-blue-600" />
                            </div>
                         )}
-                        <label className="block text-[10px] text-slate-500 font-bold uppercase">Arrival Rate (λ)</label>
+                        <label className="block text-[10px] text-slate-500 font-bold uppercase">
+                            {selectedModel === QueueModel.MMS_N_POP ? "Rate per Person (λ)" : "Arrival Rate (λ)"}
+                        </label>
                         <div className="flex items-center justify-between">
-                        <input type="range" min="1" max="200" value={lambdaInput} onChange={(e) => setLambdaInput(Number(e.target.value))} className="flex-1 mr-2 accent-blue-600 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer" />
+                        <input type="range" min="1" max={selectedModel === QueueModel.MMS_N_POP ? 20 : 200} value={lambdaInput} onChange={(e) => setLambdaInput(Number(e.target.value))} className="flex-1 mr-2 accent-blue-600 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer" />
                         <span className="text-xs font-mono font-bold bg-white px-2 py-1 rounded border min-w-[3rem] text-center">{lambdaInput}</span>
                         </div>
-                        <p className="text-[10px] text-slate-400 text-right">arrivals / hr</p>
+                        <p className="text-[10px] text-slate-400 text-right">
+                             {selectedModel === QueueModel.MMS_N_POP ? "requests / hr / person" : "arrivals / hr"}
+                        </p>
                     </>
                 )}
               </div>
@@ -1005,7 +1201,7 @@ export const App: React.FC = () => {
                      />
                  ) : (
                      <>
-                        {(selectedModel === QueueModel.MMS || selectedModel === QueueModel.MMSK) && (
+                        {(selectedModel === QueueModel.MMS || selectedModel === QueueModel.MMSK || selectedModel === QueueModel.MMS_N_POP) && (
                             <>
                             <label className="block text-[10px] text-slate-500 font-bold uppercase">Number of {getResourceName()} (s)</label>
                             <div className="flex items-center justify-between">
@@ -1023,12 +1219,22 @@ export const App: React.FC = () => {
                             </div>
                             </>
                         )}
+                        {selectedModel === QueueModel.MMS_N_POP && (
+                            <>
+                            <label className="block text-[10px] text-slate-500 font-bold uppercase mt-2">Population Size (N)</label>
+                            <div className="flex items-center justify-between">
+                                <input type="range" min={serverCountInput} max="200" value={populationSize} onChange={(e) => setPopulationSize(Number(e.target.value))} className="flex-1 mr-2 accent-purple-600 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer" />
+                                <span className="text-xs font-mono font-bold bg-white px-2 py-1 rounded border min-w-[3rem] text-center">{populationSize}</span>
+                            </div>
+                            </>
+                        )}
                      </>
                  )}
               </div>
 
               {/* Advanced Config Section */}
               <div className="border-t pt-4">
+                  {/* ... [Advanced config options unchanged] ... */}
                   <h3 className="text-xs font-black uppercase text-slate-400 mb-2">Advanced Scenarios</h3>
                   <div className="space-y-2">
                       {/* Priority / VIP */}
@@ -1255,15 +1461,34 @@ export const App: React.FC = () => {
                                 {theoretical?.isStable === false ? 'Unstable' : 'Stable'}
                             </span>
                         </div>
-                        {Object.values(documentationContent).slice(0, 3).map((item: {title: string; desc: string}, i) => ( // Show first 3 sections
+                        
+                        {/* Primary Specs */}
+                        {[documentationContent.arrivals, documentationContent.service, documentationContent.discipline].map((item, i) => (
                             <div key={i}>
                                 <h4 className="text-[10px] font-bold text-slate-500 uppercase">{item.title}</h4>
                                 <p className="text-xs text-slate-600">{item.desc}</p>
                             </div>
                         ))}
+
+                        {/* Assumptions & Scope Section */}
+                        <div className="mt-4 pt-3 border-t border-slate-100 bg-slate-50/50 -mx-2 px-2 pb-2 rounded">
+                            <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-2 flex items-center gap-1">
+                                <i className="fa-solid fa-circle-info"></i> Assumptions & Scope
+                            </h4>
+                            <ul className="space-y-1">
+                                {documentationContent.scope.items.map((item, idx) => (
+                                    <li key={idx} className="text-[10px] text-slate-600 flex items-start gap-1.5 leading-tight">
+                                        <span className="mt-0.5 w-1 h-1 bg-blue-400 rounded-full shrink-0"></span>
+                                        {item}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+
                         {theoretical?.isApproximate && (
-                            <div className="mt-2 bg-amber-50 p-2 rounded border border-amber-100">
-                                <p className="text-[10px] text-amber-700 font-medium">Note: {theoretical.approxNote}</p>
+                            <div className="mt-2 bg-amber-50 p-2 rounded border border-amber-100 flex gap-2 items-start">
+                                <i className="fa-solid fa-triangle-exclamation text-amber-500 text-xs mt-0.5"></i>
+                                <p className="text-[10px] text-amber-700 font-medium">{theoretical.approxNote}</p>
                             </div>
                         )}
                      </div>
@@ -1337,17 +1562,35 @@ export const App: React.FC = () => {
            </div>
 
            {/* Visualization Area */}
-           <div className="rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative min-h-[400px] flex flex-col bg-white">
-              
+           <div className="rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative min-h-[300px] md:min-h-[400px] flex flex-col bg-white">
+              {/* ... [Visualizer implementation unchanged] ... */}
               {/* SERVICE FLOOR CONTAINER */}
               <div className="flex-1 flex relative">
                   
+                  {/* FLOATING GLOBAL EFFECTS LAYER */}
+                  <div className="absolute inset-0 pointer-events-none z-50 overflow-hidden">
+                    {floatingEffects.filter(e => !e.serverId).map(e => (
+                        <div 
+                            key={e.id} 
+                            style={{left: `${e.x}%`, top: `${e.y}%`}} 
+                            className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center animate-float-fade"
+                        >
+                           <div className={`text-2xl drop-shadow-md ${e.color}`}>
+                               <i className={`fa-solid ${e.icon}`}></i>
+                           </div>
+                           <div className={`text-[10px] font-black uppercase tracking-wider bg-white/90 px-2 py-0.5 rounded shadow-sm border border-slate-100 ${e.color}`}>
+                               {e.label}
+                           </div>
+                        </div>
+                    ))}
+                  </div>
+
                   {/* ARRIVAL ZONE (LEFT) */}
-                  <div className="w-24 bg-slate-50 border-r border-slate-200 flex flex-col items-center justify-center relative shadow-inner z-10">
+                  <div className="w-14 md:w-24 bg-slate-50 border-r border-slate-200 flex flex-col items-center justify-center relative shadow-inner z-10">
                       <div className="absolute inset-0 bg-slate-100/50"></div>
                       <div className="relative z-10 flex flex-col items-center opacity-50">
-                          <i className="fa-solid fa-door-open text-4xl text-slate-400 mb-2"></i>
-                          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 -rotate-90 mt-4 whitespace-nowrap">Entrance</span>
+                          <i className="fa-solid fa-door-open text-2xl md:text-4xl text-slate-400 mb-2"></i>
+                          <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 -rotate-90 mt-4 whitespace-nowrap">Entrance</span>
                       </div>
                       <div className="absolute bottom-0 w-full h-2 bg-emerald-500/20"></div>
                   </div>
@@ -1358,7 +1601,7 @@ export const App: React.FC = () => {
                       {/* --- OVERLAYS --- */}
                       
                       {/* Status Badge */}
-                      <div className={`absolute top-4 left-4 z-10 backdrop-blur px-3 py-1 rounded-full text-xs font-bold border transition-colors duration-500 ${activeState.isPanic ? 'bg-orange-500/90 text-white border-orange-600 animate-pulse' : 'bg-white/80 text-slate-500 border-slate-200'}`}>
+                      <div className={`absolute top-2 left-2 md:top-4 md:left-4 z-10 backdrop-blur px-3 py-1 rounded-full text-[10px] md:text-xs font-bold border transition-colors duration-500 ${activeState.isPanic ? 'bg-orange-500/90 text-white border-orange-600 animate-pulse' : 'bg-white/80 text-slate-500 border-slate-200'}`}>
                           {activeState.isPanic ? (
                               <>
                                 <i className="fa-solid fa-gauge-high mr-2 text-white"></i> HIGH PRESSURE
@@ -1372,7 +1615,7 @@ export const App: React.FC = () => {
 
                       {/* Orbit Cloud Visualization */}
                       {!scrubbedSnapshot && activeState.orbit.length > 0 && (
-                          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-10 flex flex-col items-center animate-float">
+                          <div className="absolute top-2 md:top-4 left-1/2 transform -translate-x-1/2 z-10 flex flex-col items-center animate-float">
                               <div className="bg-white/80 backdrop-blur border border-cyan-200 text-cyan-600 px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
                                   <i className="fa-solid fa-cloud text-lg"></i>
                                   <div>
@@ -1402,8 +1645,8 @@ export const App: React.FC = () => {
 
                       {/* Speed Control Overlay (Only visible when not scrubbing) */}
                       {!scrubbedSnapshot && (
-                          <div className="absolute top-4 right-4 z-10 w-32">
-                             <label className="block text-[9px] font-bold text-slate-400 uppercase text-right mb-1">Sim Speed</label>
+                          <div className="absolute top-2 right-2 md:top-4 md:right-4 z-10 w-24 md:w-32">
+                             <label className="block text-[8px] md:text-[9px] font-bold text-slate-400 uppercase text-right mb-1">Sim Speed</label>
                              <input type="range" min="1" max="50" value={simSpeed} onChange={(e) => setSimSpeed(Number(e.target.value))} className="w-full h-1 accent-slate-600 bg-slate-200 rounded appearance-none" />
                           </div>
                       )}
@@ -1411,7 +1654,7 @@ export const App: React.FC = () => {
                       {/* --- FLOOR CONTENT --- */}
 
                       {/* TOP HALF: SERVERS */}
-                      <div className="flex-1 flex flex-col items-center justify-center p-4 relative">
+                      <div className="flex-1 flex flex-col items-center justify-center p-2 md:p-4 relative">
                           <div className="flex justify-center flex-wrap w-full">
                               
                               {/* Dedicated Queue: Balked Customers Area */}
@@ -1463,7 +1706,7 @@ export const App: React.FC = () => {
                                   }
 
                                   return (
-                                  <div key={server.id} className="flex flex-col items-center relative group mx-2 mb-4">
+                                  <div key={server.id} className="flex flex-col items-center relative group mx-1 md:mx-2 mb-2 md:mb-4">
                                       {/* Batch / Multi-Customer indicator - Absolute over Card */}
                                       {server._activeBatch && server._activeBatch.length > 1 && (
                                           <div className="absolute -top-2 -right-2 bg-indigo-600 text-white text-[9px] font-bold w-5 h-5 flex items-center justify-center rounded-full z-20 border-2 border-white">
@@ -1477,6 +1720,18 @@ export const App: React.FC = () => {
                                               <i className="fa-solid fa-triangle-exclamation text-xl"></i>
                                           </div>
                                       )}
+
+                                      {/* FLOATING SERVER EFFECTS */}
+                                      {floatingEffects.filter(e => e.serverId === server.id).map(e => (
+                                         <div key={e.id} className="absolute -top-12 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center animate-float-fade pointer-events-none whitespace-nowrap">
+                                             <div className={`text-xl drop-shadow-md ${e.color}`}>
+                                                 <i className={`fa-solid ${e.icon}`}></i>
+                                             </div>
+                                             <div className={`text-[8px] font-black uppercase tracking-wider bg-white/95 px-1.5 py-0.5 rounded shadow border ${e.color}`}>
+                                                 {e.label}
+                                             </div>
+                                         </div>
+                                      ))}
                                       
                                       {/* Departing Customers (Animation Layer) - MOVING TO EXIT */}
                                       {!scrubbedSnapshot && activeState.recentlyDeparted.filter(c => c.serverId === server.id).map(c => (
@@ -1490,7 +1745,7 @@ export const App: React.FC = () => {
                                       ))}
 
                                       {/* SERVER PROFILE CARD */}
-                                      <div className={`w-20 h-28 rounded-xl border-2 transition-all duration-300 relative flex flex-col items-center justify-between p-2 shadow-sm ${cardBg} ${cardBorder}`}>
+                                      <div className={`w-14 h-20 md:w-20 md:h-28 rounded-xl border-2 transition-all duration-300 relative flex flex-col items-center justify-between p-1.5 md:p-2 shadow-sm ${cardBg} ${cardBorder}`}>
 
                                           {/* EDIT MODE OVERLAY */}
                                           {isEditing ? (
@@ -1519,7 +1774,7 @@ export const App: React.FC = () => {
                                               {/* Header: Badge & Settings */}
                                               <div className="w-full flex justify-between items-center z-10">
                                                   {/* Seniority Badge */}
-                                                  <div className={`w-5 h-5 rounded-full border flex items-center justify-center text-[9px] ${badgeColor}`} title={server.typeLabel}>
+                                                  <div className={`w-4 h-4 md:w-5 md:h-5 rounded-full border flex items-center justify-center text-[8px] md:text-[9px] ${badgeColor}`} title={server.typeLabel}>
                                                       <i className={`fa-solid ${badgeIcon}`}></i>
                                                   </div>
                                                   
@@ -1535,7 +1790,7 @@ export const App: React.FC = () => {
                                               </div>
 
                                               {/* Avatar (Center) */}
-                                              <div className={`text-3xl z-10 transition-colors ${server.state === ServerState.OFFLINE ? 'opacity-20' : (server.state === ServerState.BUSY ? 'text-slate-700' : 'text-slate-300')}`}>
+                                              <div className={`text-xl md:text-3xl z-10 transition-colors ${server.state === ServerState.OFFLINE ? 'opacity-20' : (server.state === ServerState.BUSY ? 'text-slate-700' : 'text-slate-300')}`}>
                                                   {environment === Environment.CALL_CENTER && <i className="fa-solid fa-headset"></i>}
                                                   {environment === Environment.MARKET && <i className="fa-solid fa-cart-shopping"></i>}
                                                   {environment === Environment.BANK && <i className="fa-solid fa-user-tie"></i>}
@@ -1544,7 +1799,7 @@ export const App: React.FC = () => {
                                               {/* Active Customer Overlay (if busy) */}
                                               {server.state === ServerState.BUSY && server._activeCustomer && (
                                                   <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 mt-2 z-20">
-                                                      <div className={`w-6 h-6 rounded-full shadow-md border-2 border-white flex items-center justify-center text-[10px] text-white ${server._activeCustomer.color} animate-pop-in`}>
+                                                      <div className={`w-5 h-5 md:w-6 md:h-6 rounded-full shadow-md border-2 border-white flex items-center justify-center text-[8px] md:text-[10px] text-white ${server._activeCustomer.color} animate-pop-in`}>
                                                           {skillBasedRouting ? (
                                                                 <i className={`fa-solid ${getSkillIcon(server._activeCustomer.requiredSkill)}`}></i>
                                                             ) : (
@@ -1560,13 +1815,13 @@ export const App: React.FC = () => {
                                                   {skillBasedRouting && (
                                                       <div className="flex gap-0.5 justify-center flex-wrap">
                                                           {server.skills.map((skill, i) => (
-                                                              <div key={i} className={`w-1.5 h-1.5 rounded-full ${getSkillColor(skill)}`} title={skill}></div>
+                                                              <div key={i} className={`w-1 h-1 md:w-1.5 md:h-1.5 rounded-full ${getSkillColor(skill)}`} title={skill}></div>
                                                           ))}
                                                       </div>
                                                   )}
 
                                                   {/* Stress/Load Bar */}
-                                                  <div className="w-full h-1.5 bg-slate-200/50 rounded-full overflow-hidden mt-1 relative border border-black/5">
+                                                  <div className="w-full h-1 md:h-1.5 bg-slate-200/50 rounded-full overflow-hidden mt-1 relative border border-black/5">
                                                       {isPanic ? (
                                                           <div className="h-full bg-red-500 animate-pulse w-full"></div>
                                                       ) : (
@@ -1579,7 +1834,7 @@ export const App: React.FC = () => {
                                       </div>
 
                                       {/* State Label */}
-                                      <div className={`mt-1 text-[9px] font-bold uppercase tracking-wider ${
+                                      <div className={`mt-1 text-[8px] md:text-[9px] font-bold uppercase tracking-wider ${
                                           server.state === ServerState.BUSY ? (activeState.isPanic ? 'text-orange-600' : 'text-emerald-600') : 
                                           server.state === ServerState.OFFLINE ? 'text-red-400' : 'text-slate-300'
                                       }`}>
@@ -1589,8 +1844,15 @@ export const App: React.FC = () => {
                                       {/* Dedicated Queue (Vertical) */}
                                       {queueTopology === QueueTopology.DEDICATED && (
                                           <div className="mt-1 flex flex-col gap-1 items-center min-h-[40px]">
-                                              {server.queue.map((c, i) => (
-                                                  <div key={c.id} className={`w-3 h-3 rounded-full shadow-sm transition-all flex items-center justify-center text-[6px] text-white ${c.color} ${!scrubbedSnapshot ? 'animate-walk-in' : ''} ${i === 0 && !scrubbedSnapshot ? 'animate-pulse' : ''} relative group`}>
+                                              {server.queue.map((c, i) => {
+                                                  // Dynamic Mood Coloring
+                                                  const mood = getCustomerMoodStyle(c, activeState.currentTime, impatientMode, avgPatienceTime);
+                                                  return (
+                                                  <div 
+                                                    key={c.id} 
+                                                    className={`w-3 h-3 rounded-full shadow-sm transition-all flex items-center justify-center text-[6px] text-white ${mood.className} ${!impatientMode ? c.color : ''} ${!scrubbedSnapshot ? 'animate-walk-in' : ''} ${i === 0 && !scrubbedSnapshot ? 'animate-pulse' : ''} relative group`}
+                                                    style={mood.style}
+                                                  >
                                                       {skillBasedRouting && <i className={`fa-solid ${getSkillIcon(c.requiredSkill)}`}></i>}
                                                       
                                                       {/* EWT Badge for last in line */}
@@ -1601,7 +1863,7 @@ export const App: React.FC = () => {
                                                           </div>
                                                       )}
                                                   </div>
-                                              ))}
+                                              )})}
                                               {server.queue.length > 0 && <span className="text-[9px] text-slate-400 mt-1 font-mono">{server.queue.length}</span>}
                                           </div>
                                       )}
@@ -1617,7 +1879,7 @@ export const App: React.FC = () => {
                       {/* Common Queue (Horizontal/Snake) */}
                       {queueTopology === QueueTopology.COMMON && (
                           <div className="w-full max-w-2xl">
-                              <div className="flex flex-wrap gap-2 justify-center items-center p-2 relative">
+                              <div className="flex flex-wrap gap-1 md:gap-2 justify-center items-center p-2 relative">
                                   {/* Empty State */}
                                   {activeState.queue.length === 0 && activeState.recentlyBalked.length === 0 && (
                                       <span className="text-xs text-slate-300 font-bold uppercase tracking-widest">Queue Empty</span>
@@ -1627,7 +1889,7 @@ export const App: React.FC = () => {
                                   {!scrubbedSnapshot && activeState.recentlyBalked.map(c => (
                                       <div 
                                           key={c.id}
-                                          className={`w-4 h-4 rounded-full shadow-sm flex items-center justify-center text-[10px] text-white bg-red-500 animate-balk`}
+                                          className={`w-3 h-3 md:w-4 md:h-4 rounded-full shadow-sm flex items-center justify-center text-[8px] md:text-[10px] text-white bg-red-500 animate-balk`}
                                           title="Left immediately"
                                       >
                                           <i className="fa-solid fa-xmark"></i>
@@ -1635,10 +1897,13 @@ export const App: React.FC = () => {
                                   ))}
 
                                   {/* Queued Customers */}
-                                  {activeState.queue.slice(0, 40).map((customer, idx) => (
+                                  {activeState.queue.slice(0, 40).map((customer, idx) => {
+                                      const mood = getCustomerMoodStyle(customer, activeState.currentTime, impatientMode, avgPatienceTime);
+                                      return (
                                       <div 
                                         key={customer.id} 
-                                        className={`relative w-4 h-4 rounded-full shadow-sm transition-all duration-500 flex items-center justify-center text-[8px] text-white/90 ${customer.color} ${!scrubbedSnapshot ? 'animate-walk-in' : ''} ${idx === 0 && !scrubbedSnapshot ? 'animate-pulse' : ''}`}
+                                        className={`relative w-3 h-3 md:w-4 md:h-4 rounded-full shadow-sm transition-all duration-500 flex items-center justify-center text-[6px] md:text-[8px] text-white/90 ${mood.className} ${!impatientMode ? customer.color : ''} ${!scrubbedSnapshot ? 'animate-walk-in' : ''} ${idx === 0 && !scrubbedSnapshot ? 'animate-pulse' : ''}`}
+                                        style={mood.style}
                                         title={`Arrived: ${formatTime(openHour + customer.arrivalTime/60)}`}
                                       >
                                           {skillBasedRouting ? (
@@ -1655,9 +1920,9 @@ export const App: React.FC = () => {
                                               </div>
                                           )}
                                       </div>
-                                  ))}
+                                  )})}
                                   {activeState.queue.length > 40 && (
-                                      <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-[10px] text-slate-500 font-bold">
+                                      <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-slate-200 flex items-center justify-center text-[8px] md:text-[10px] text-slate-500 font-bold">
                                           +{activeState.queue.length - 40}
                                       </div>
                                   )}
@@ -1683,11 +1948,11 @@ export const App: React.FC = () => {
               </div>
 
               {/* DEPARTURE ZONE (RIGHT) */}
-              <div className="w-24 bg-slate-50 border-l border-slate-200 flex flex-col items-center justify-center relative shadow-inner z-10">
+              <div className="w-14 md:w-24 bg-slate-50 border-l border-slate-200 flex flex-col items-center justify-center relative shadow-inner z-10">
                   <div className="absolute inset-0 bg-slate-100/50"></div>
                   <div className="relative z-10 flex flex-col items-center opacity-50">
-                      <i className="fa-solid fa-person-walking-arrow-right text-4xl text-slate-400 mb-2"></i>
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 rotate-90 mt-4 whitespace-nowrap">Exit</span>
+                      <i className="fa-solid fa-person-walking-arrow-right text-2xl md:text-4xl text-slate-400 mb-2"></i>
+                      <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 rotate-90 mt-4 whitespace-nowrap">Exit</span>
                   </div>
                   <div className="absolute bottom-0 w-full h-2 bg-red-500/20"></div>
               </div>
@@ -1697,7 +1962,7 @@ export const App: React.FC = () => {
 
            {/* Graphs Section */}
            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              
+              {/* ... [Wait Time & Queue Length charts unchanged] ... */}
               {/* Scenario Legend */}
               {savedScenarios.length > 0 && (
                 <div className="md:col-span-2 bg-white p-3 rounded-xl border border-slate-200 flex flex-wrap gap-2 items-center">
@@ -1776,10 +2041,165 @@ export const App: React.FC = () => {
                   </ResponsiveContainer>
               </div>
            </div>
+
+           {/* Customer Lifecycle Gantt Chart */}
+           <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 min-h-[350px] mt-6">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2">
+                        <i className="fa-solid fa-bars-staggered text-indigo-500"></i> Customer Lifecycle Graph
+                    </h3>
+                    <p className="text-[10px] text-slate-400">Visualizing flow & delay ripples (Last 30 Departures)</p>
+                </div>
+                <div className="h-[300px] w-full">
+                    {ganttData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                                data={ganttData}
+                                layout="vertical"
+                                barCategoryGap={2}
+                                margin={{ top: 5, right: 30, left: 0, bottom: 5 }}
+                            >
+                                <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={true} stroke="#f1f5f9" />
+                                <XAxis 
+                                    type="number" 
+                                    domain={['auto', 'auto']} 
+                                    tick={{fontSize: 10}} 
+                                    stroke="#cbd5e1" 
+                                    tickFormatter={xAxisFormatterMinutes} 
+                                    label={{ value: 'Time of Day', position: 'insideBottom', offset: -5, fontSize: 10 }} 
+                                />
+                                <YAxis 
+                                    type="category" 
+                                    dataKey="displayId" 
+                                    width={40} 
+                                    tick={{fontSize: 10}} 
+                                    stroke="#cbd5e1" 
+                                />
+                                <Tooltip 
+                                    contentStyle={{fontSize: '11px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
+                                    cursor={{fill: '#f8fafc'}}
+                                    formatter={(value: number, name: string, props: any) => {
+                                        if (name === 'arrivalOffset') return [null, null]; // Hide offset
+                                        return [`${value.toFixed(2)} min`, name];
+                                    }}
+                                    labelFormatter={(label, payload) => {
+                                        if (payload && payload.length > 0) {
+                                            const data = payload[0].payload;
+                                            return `${label} (${data.type})`;
+                                        }
+                                        return label;
+                                    }}
+                                />
+                                <Legend wrapperStyle={{fontSize: '10px'}} />
+                                
+                                {/* Transparent Spacer (Offset to Arrival Time) */}
+                                <Bar dataKey="arrivalOffset" stackId="a" fill="transparent" isAnimationActive={false} legendType="none" />
+                                
+                                {/* Wait Time (Yellow) */}
+                                <Bar dataKey="wait" stackId="a" fill="#f59e0b" name="Wait Time" isAnimationActive={false} radius={[2, 0, 0, 2]} />
+                                
+                                {/* Service Time (Green) */}
+                                <Bar dataKey="service" stackId="a" fill="#10b981" name="Service Time" isAnimationActive={false} radius={[0, 2, 2, 0]} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    ) : (
+                        <div className="h-full flex flex-col items-center justify-center text-slate-300">
+                            <i className="fa-solid fa-chart-gantt text-4xl mb-2"></i>
+                            <span className="text-xs">Waiting for customer completions...</span>
+                        </div>
+                    )}
+                </div>
+           </div>
+
+           {/* NEW: Server Utilization Gantt Chart */}
+           <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 mt-6">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2">
+                        <i className="fa-solid fa-layer-group text-emerald-500"></i> Server Graph (Utilization)
+                    </h3>
+                    <p className="text-[10px] text-slate-400">Visualizing idle time fragmentation</p>
+                </div>
+                
+                <div className="relative w-full h-[300px] overflow-y-auto bg-slate-50 rounded-lg border border-slate-100">
+                    {/* SVG Visualization for Precise Fragmentation */}
+                    {(() => {
+                        const rowHeight = 30;
+                        const headerHeight = 20;
+                        const svgHeight = Math.max(300, activeState.servers.length * rowHeight + headerHeight);
+                        const currentTime = activeState.currentTime;
+                        const maxTime = Math.max(10, currentTime);
+                        
+                        return (
+                            <svg width="100%" height={svgHeight} className="min-w-[600px] block">
+                                {/* X-Axis Grid Lines */}
+                                {Array.from({length: 11}).map((_, i) => {
+                                    const xPct = i * 10;
+                                    const timeVal = (i/10) * maxTime;
+                                    return (
+                                        <g key={i}>
+                                            <line x1={`${xPct}%`} y1={headerHeight} x2={`${xPct}%`} y2="100%" stroke="#e2e8f0" strokeDasharray="4 4" />
+                                            <text x={`${xPct}%`} y={12} textAnchor="middle" fontSize="9" fill="#94a3b8">{xAxisFormatterMinutes(timeVal)}</text>
+                                        </g>
+                                    )
+                                })}
+
+                                {/* Server Rows */}
+                                {activeState.servers.map((server, idx) => {
+                                    const y = headerHeight + idx * rowHeight;
+                                    return (
+                                        <g key={server.id}>
+                                            {/* Row Background (Striped) */}
+                                            <rect x="0" y={y} width="100%" height={rowHeight} fill={idx % 2 === 0 ? "white" : "#f8fafc"} />
+                                            
+                                            {/* Label */}
+                                            <text x="5" y={y + 18} fontSize="10" fontWeight="bold" fill="#64748b">
+                                                Srv {server.id} ({server.typeLabel === 'Normal' ? 'N' : server.typeLabel[0]})
+                                            </text>
+
+                                            {/* Timeline Segments */}
+                                            {server.timeline.map((seg, i) => {
+                                                const startPct = (seg.start / maxTime) * 100;
+                                                const endTime = seg.end ?? currentTime;
+                                                const duration = endTime - seg.start;
+                                                const widthPct = (duration / maxTime) * 100;
+                                                
+                                                let color = "#cbd5e1"; // IDLE
+                                                if (seg.state === ServerState.BUSY) color = "#10b981"; // BUSY (Emerald)
+                                                if (seg.state === ServerState.OFFLINE) color = "#ef4444"; // OFFLINE (Red)
+
+                                                return (
+                                                    <rect 
+                                                        key={i}
+                                                        x={`${startPct}%`} 
+                                                        y={y + 8} 
+                                                        width={`${Math.max(0.1, widthPct)}%`} 
+                                                        height={14} 
+                                                        fill={color}
+                                                        rx={2}
+                                                        opacity={0.9}
+                                                    >
+                                                        <title>{seg.state}: {seg.start.toFixed(2)}m - {endTime.toFixed(2)}m ({duration.toFixed(2)}m)</title>
+                                                    </rect>
+                                                )
+                                            })}
+                                        </g>
+                                    );
+                                })}
+                            </svg>
+                        )
+                    })()}
+                </div>
+                
+                <div className="flex gap-4 mt-2 justify-end text-[10px] font-bold text-slate-500">
+                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-emerald-500 rounded-sm"></div> Busy</div>
+                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-slate-300 rounded-sm"></div> Idle</div>
+                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-red-500 rounded-sm"></div> Offline</div>
+                </div>
+           </div>
            
            {/* Sensitivity Analysis Lab (Replaces Cost Optimization) */}
            {!useDynamicMode && (
-               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mt-6">
                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                        <h3 className="text-sm font-bold text-slate-800 uppercase flex items-center gap-2">
                            <i className="fa-solid fa-flask text-purple-600"></i> Sensitivity Analysis Lab

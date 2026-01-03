@@ -1,3 +1,4 @@
+
 # M/M/s Queue Simulator Pro
 
 A rigorous, interactive, and visually rich web application for simulating and analyzing queueing systems. This tool bridges the gap between theoretical queueing models (M/M/s, G/G/s, etc.) and real-time stochastic discrete-event simulation.
@@ -15,6 +16,7 @@ Support for standard Kendall's Notation models with configurable parameters:
 *   **M/M/s**: Multiple servers with infinite queue capacity.
 *   **M/M/∞**: Infinite server model (self-service).
 *   **M/M/s/K**: Finite system capacity (blocking/loss system).
+*   **M/M/s//N**: Finite calling population (Machine Repair model).
 
 ### 2. Flexible Distribution Engine
 Go beyond simple Markovian models. Configure Arrival and Service processes independently:
@@ -33,10 +35,26 @@ The app runs two parallel engines to validate results:
     *   Tracks individual entities (Customers/Servers).
     *   Calculates statistical accumulators for Wait Time ($W_q$), Queue Length ($L_q$), and Utilization ($\rho$).
 
-### 4. High-Fidelity Visualization
+### 4. Advanced Simulation Mechanics
+*   **Dynamic Staffing**: Configure hourly schedules for arrivals $\lambda(t)$ and staff count $s(t)$ to simulate lunch rushes or shift changes.
+*   **Skill-Based Routing**: Route customers (Sales, Tech, Support) to agents with matching skills.
+*   **Retrial / Orbit**: Simulate call centers where blocked customers enter an "Orbit" and retry after a delay.
+*   **Breakdowns & Panic Mode**: Introduce random server failures (MTBF/MTTR) or trigger "Panic Mode" (increased efficiency) when queues get too long.
+*   **Batch Processing**: Support for Bulk Arrivals and Batch Service logic.
+
+### 5. High-Fidelity Visualization
 *   **Live "Bank" View**: Watch customers arrive, queue, and get served by animated tellers in real-time.
-*   **Time-Series Charts**: Compare observed simulation metrics against theoretical steady-state targets dynamically.
-*   **Little's Law Check**: visually verify $L = \lambda W$ stability.
+*   **Dynamic Mood System**: Customers change color (Green $\to$ Red) and shake with anger as they wait longer than their patience threshold.
+*   **Floating Reaction System**: Visual emojis pop up for discrete events like VIP Arrivals (👑), Reneging (😡), Breakdowns (⚠️), and Retrials (🔄).
+*   **Sensitivity Lab**: Perform "What-If" analysis by varying parameters (Servers, Lambda, Service Time) and plotting Cost vs. Waiting Time curves.
+
+### 6. Network & Data Lab
+*   **Jackson Network Builder**: Design multi-stage stochastic networks with probabilistic routing and blocking.
+*   **Data Lab**: Upload CSV logs to analyze historical data distributions and run trace-driven simulations.
+
+### 7. Reporting & Documentation
+*   **Excel Export**: Download detailed `.xlsx` reports containing summary statistics and granular customer logs (including **queue length at arrival**, wait times, and service metrics).
+*   **Dynamic Documentation**: The app automatically generates an "Assumptions & Scope" section based on the active configuration, helping users understand model limitations (e.g., instability warnings, approximation notes).
 
 ## 🛠 Technical Stack
 
@@ -45,6 +63,7 @@ The app runs two parallel engines to validate results:
 *   **Styling**: Tailwind CSS
 *   **Charting**: Recharts
 *   **Icons**: FontAwesome 6
+*   **Export**: SheetJS (xlsx)
 *   **Build Tool**: Vite (implied environment)
 
 ## 🧮 Theoretical Background
@@ -81,9 +100,10 @@ $$ E[L_q]_{G/G/s} \approx E[L_q]_{M/M/s} \cdot \frac{C_a^2 + C_s^2}{2} $$
     *   Use the **Play/Pause** button to stop time.
     *   Adjust **Speed** slider to fast-forward simulation.
     *   Hit **Reset** to clear statistics and start over.
-4.  **Analyze**:
-    *   Check the "Model Documentation" card for validity notes.
-    *   Watch the graphs to see if the green "Actual" line converges to the blue dashed "Theoretical" line.
+4.  **Analyze & Export**:
+    *   Check the "Model Configuration" card for auto-generated assumptions.
+    *   Watch the graphs to see convergence.
+    *   Click **Export** to download the simulation dataset for external analysis in Excel.
 
 ## 🤝 Contributing
 

@@ -45,7 +45,12 @@ export class NetworkEngine {
                 totalBusyTime: 0,
                 startTime: 0,
                 skills: [SkillType.GENERAL],
-                _activeBatch: [] // Initialize batch array
+                _activeBatch: [], // Initialize batch array
+                timeline: [{
+                    state: ServerState.IDLE,
+                    start: 0,
+                    end: null
+                }]
             }));
             
             node.queue = [];
@@ -149,6 +154,17 @@ export class NetworkEngine {
                     server.state = ServerState.BUSY;
                     server._activeBatch = batch;
                     server._activeCustomer = batch[0]; // Legacy/Visual fallback
+                    
+                    // UPDATE TIMELINE
+                    if (server.timeline.length > 0) {
+                        const lastSeg = server.timeline[server.timeline.length - 1];
+                        if (lastSeg.end === null) lastSeg.end = this.currentTime;
+                    }
+                    server.timeline.push({
+                        state: ServerState.BUSY,
+                        start: this.currentTime,
+                        end: null
+                    });
                 }
             }
 
@@ -174,6 +190,17 @@ export class NetworkEngine {
                         server.state = ServerState.IDLE;
                         server._activeBatch = [];
                         server._activeCustomer = undefined;
+
+                        // UPDATE TIMELINE
+                        if (server.timeline.length > 0) {
+                            const lastSeg = server.timeline[server.timeline.length - 1];
+                            if (lastSeg.end === null) lastSeg.end = newTime;
+                        }
+                        server.timeline.push({
+                            state: ServerState.IDLE,
+                            start: newTime,
+                            end: null
+                        });
                     }
                 }
                 // Fallback for single mode if _activeBatch wasn't used (legacy safety)
@@ -190,6 +217,17 @@ export class NetworkEngine {
                         server.state = ServerState.IDLE;
                         server._activeCustomer = undefined;
                         server._activeBatch = [];
+
+                        // UPDATE TIMELINE
+                        if (server.timeline.length > 0) {
+                            const lastSeg = server.timeline[server.timeline.length - 1];
+                            if (lastSeg.end === null) lastSeg.end = newTime;
+                        }
+                        server.timeline.push({
+                            state: ServerState.IDLE,
+                            start: newTime,
+                            end: null
+                        });
                      }
                 }
             });

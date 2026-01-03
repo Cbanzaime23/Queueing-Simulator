@@ -125,6 +125,20 @@ export const calculateRequiredServers = (
 };
 
 /**
+ * Helper: Compute Binomial Coefficient
+ */
+const combinations = (n: number, k: number): number => {
+    if (k < 0 || k > n) return 0;
+    if (k === 0 || k === n) return 1;
+    if (k > n / 2) k = n - k;
+    let res = 1;
+    for (let i = 1; i <= k; i++) {
+        res = res * (n - i + 1) / i;
+    }
+    return res;
+};
+
+/**
  * THEORETICAL ENGINE
  * 
  * Calculates steady-state performance metrics for queueing systems.
@@ -134,13 +148,15 @@ export const calculateRequiredServers = (
  * 2. M/G/1: Uses exact Pollaczek-Khinchine formula (via Allen-Cunneen identity).
  * 3. M/G/inf: Uses exact Palm's Theorem / Little's Law.
  * 4. M/M/s/K: Uses exact finite-state birth-death probabilities.
- * 5. G/G/s: Uses Allen-Cunneen / Sakasegawa Approximations.
+ * 5. M/M/s/N/N: Finite Population (Machine Repair Model).
+ * 6. G/G/s: Uses Allen-Cunneen / Sakasegawa Approximations.
  * 
  * @param lambda Arrival rate (customers per hour)
  * @param mu Service rate (customers per hour)
  * @param s Number of servers
  * @param model The Kendall notation model selected
  * @param K System capacity (for M/M/s/K)
+ * @param populationSize Population size (N) for M/M/s//N
  * @param arrivalType Distribution of inter-arrival times
  * @param erlangK Shape parameter for Erlang arrivals
  * @param serviceType Distribution of service times
@@ -156,6 +172,7 @@ export const calculateTheoreticalMetrics = (
   s: number,
   model: QueueModel = QueueModel.MMS,
   K: number = Infinity,
+  populationSize: number = Infinity, // For Finite Population
   arrivalType: DistributionType = DistributionType.POISSON,
   erlangK: number = 2,
   serviceType: DistributionType = DistributionType.POISSON,
@@ -167,7 +184,6 @@ export const calculateTheoreticalMetrics = (
 ): TheoreticalMetrics => {
   
   if (arrivalType === DistributionType.TRACE || serviceType === DistributionType.TRACE) {
-    // Cannot compute steady state metrics for arbitrary trace data generally without analysis
     return {
       rho: 0, p0: 0, lq: 0, l: 0, wq: 0, w: 0, isStable: true,
       isApproximate: true,
@@ -175,12 +191,8 @@ export const calculateTheoreticalMetrics = (
     };
   }
 
-  // Adjust Mu by efficiency
-  // e.g., if mu=4 (15 mins), and efficiency=1.5 (Fast), effective Mu=6 (10 mins)
   let effectiveMu = mu * avgEfficiency;
 
-  // Adjust Mu by Availability Factor if Breakdowns enabled
-  // A = MTBF / (MTBF + MTTR)
   if (breakdownMode && mtbf > 0) {
       const availability = mtbf / (mtbf + mttr);
       effectiveMu = effectiveMu * availability;
@@ -189,22 +201,18 @@ export const calculateTheoreticalMetrics = (
   // r = Offered Load (Erlangs)
   const r = lambda / effectiveMu;
   
-  // Effective Server Count (Handle special case for M/M/1 or M/M/inf)
+  // Effective Server Count
   const actualS = model === QueueModel.MM1 ? 1 : (model === QueueModel.MMINF ? 100 : s);
   
   // Traffic Intensity (Utilization per server)
   const rho = r / actualS;
 
-  // --- Coefficient of Variation (CV) Calculation ---
-  // Used for Approximations and Exact M/G/1 formulas.
-  
-  // Arrival CV squared
+  // CV Check
   let ca2 = 1;
   if (arrivalType === DistributionType.DETERMINISTIC) ca2 = 0;
   if (arrivalType === DistributionType.UNIFORM) ca2 = 1/3;
   if (arrivalType === DistributionType.ERLANG) ca2 = 1 / erlangK;
 
-  // Service CV squared
   let cs2 = 1;
   if (serviceType === DistributionType.DETERMINISTIC) cs2 = 0;
   if (serviceType === DistributionType.UNIFORM) cs2 = 1/3;
@@ -214,13 +222,15 @@ export const calculateTheoreticalMetrics = (
   const isPoissonService = serviceType === DistributionType.POISSON;
   const isGGS = !isPoissonArrival || !isPoissonService;
 
-  // --- Case 1: Infinite Server (M/M/inf, M/G/inf) ---
+  // --- Case 1: Infinite Server (M/M/inf, M/G/inf, G/G/inf) ---
   if (model === QueueModel.MMINF) {
-    const l = lambda / effectiveMu; // Little's Law L = λ * (1/μ) holds for G/G/∞
+    // For G/G/inf, L = λ/μ is exact (Little's Law applied to service only).
+    // W = 1/μ. Wq = 0.
+    const l = lambda / effectiveMu; 
     
-    // For M/G/∞, the number in system is Poisson distributed with mean L (Palm's Theorem).
-    // So P0 = exp(-L) is exact for M/G/∞.
-    const isExactMGInf = isPoissonArrival;
+    // P0 = exp(-L) is exact for M/G/inf (Palm's Theorem).
+    // For G/G/inf it's an approximation.
+    const isExact = isPoissonArrival;
 
     return {
       rho: 0, 
@@ -230,14 +240,83 @@ export const calculateTheoreticalMetrics = (
       wq: 0, 
       w: 1 / effectiveMu, 
       isStable: true,
-      isApproximate: !isExactMGInf, // Approximate only if Arrivals are not Poisson
-      approxNote: !isExactMGInf ? "G/G/∞ approximation (L=λ/μ remains exact)" : "Exact result (Palm's Theorem)"
+      isApproximate: !isExact,
+      approxNote: !isExact ? "G/G/∞ approximation (L=λ/μ remains exact)" : "Exact result (Palm's Theorem)"
     };
   }
 
-  // --- Case 2: Finite Capacity (M/M/s/K) ---
+  // --- Case 2: Finite Population (M/M/s/N/N) ---
+  if (model === QueueModel.MMS_N_POP) {
+      // Finite Population Model (Machine Repair)
+      // N = populationSize
+      const N = populationSize;
+      const ratio = lambda / effectiveMu; // lambda here is PER CUSTOMER arrival rate
+
+      // Calculate P0
+      let sum = 0;
+      for (let n=0; n <= N; n++) {
+          let term = combinations(N, n) * Math.pow(ratio, n);
+          // Adjustment for n > s (service limits)
+          if (n <= actualS) {
+              // Standard term
+          } else {
+              // Multiply by factor for n > s: n! / (s! * s^(n-s))
+              // But standard formula often written as:
+              // Pn = P0 * binom(N,n) * rho^n (for n<=s)
+              // Pn = P0 * binom(N,n) * (n! / s!s^(n-s)) * rho^n (for n>s)
+              // Wait, simplified:
+              // term = term * (factorial(n) / (factorial(actualS) * Math.pow(actualS, n - actualS)));
+              // Actually, simpler recursive form is safer.
+          }
+      }
+
+      // Re-implement Pn Calculation accurately
+      let p = new Array(N + 1).fill(0);
+      p[0] = 1; // Relative scale, normalize later
+      
+      for (let n = 1; n <= N; n++) {
+          let multiplier = (N - n + 1) * ratio;
+          let divider = n <= actualS ? n : actualS;
+          p[n] = p[n-1] * (multiplier / divider);
+      }
+      
+      const totalP = p.reduce((a, b) => a + b, 0);
+      const p0 = 1 / totalP;
+      const probs = p.map(val => val * p0);
+
+      // Calculate Metrics
+      let L = 0; // Number in system
+      let Lq = 0; // Number in queue
+      for (let n=0; n<=N; n++) {
+          L += n * probs[n];
+          if (n > actualS) {
+              Lq += (n - actualS) * probs[n];
+          }
+      }
+
+      // Effective Lambda = lambda * (N - L)
+      const lambdaEff = lambda * (N - L);
+      
+      const W = L / lambdaEff;
+      const Wq = Lq / lambdaEff;
+      const rhoActual = lambdaEff / (actualS * effectiveMu); // Utilization
+
+      return {
+          rho: rhoActual,
+          p0,
+          lq: Lq,
+          l: L,
+          wq: Wq,
+          w: W,
+          isStable: true, // Finite population is always stable
+          lambdaEff,
+          isApproximate: isGGS,
+          approxNote: isGGS ? "M/M/s//N formulas (G/G inputs ignored)" : undefined
+      };
+  }
+
+  // --- Case 3: Finite Capacity (M/M/s/K) ---
   if (model === QueueModel.MMSK) {
-    // Exact for M/M/s/K. For G/G/s/K we use heuristic scaling of Lq.
     let p0_inv = 0;
     for (let n = 0; n <= s; n++) {
       p0_inv += Math.pow(r, n) / factorial(n);
@@ -282,7 +361,7 @@ export const calculateTheoreticalMetrics = (
     };
   }
 
-  // --- Case 3: Standard Infinite Capacity (M/M/s, M/G/1, G/G/s) ---
+  // --- Case 4: Standard Infinite Capacity (M/M/s, M/G/1, G/G/s) ---
   
   const isStable = rho < 1;
   if (!isStable) {
@@ -301,28 +380,16 @@ export const calculateTheoreticalMetrics = (
   let lq = (p0 * Math.pow(r, actualS) * rho) / (factorial(actualS) * Math.pow(1 - rho, 2));
 
   // Apply Allen-Cunneen Approximation for G/G/s
-  // Formula: Lq(G/G/s) ≈ Lq(M/M/s) * (Ca^2 + Cs^2)/2
   if (isGGS) {
     const approxFactor = (ca2 + cs2) / 2;
     lq *= approxFactor;
   }
 
-  // Apply Breakdown Approximation
-  // Very rough approximation: Lq increases as rho increases due to breakdowns
-  // Exact formulas for M/M/s with breakdowns are very complex.
-  // We effectively modeled it by reducing mu, which increases rho, which increases Lq via Erlang-C.
-  // This is a "Derated Capacity" approximation.
-
   const wq = lq / lambda;
   const w = wq + (1 / effectiveMu);
   const l = lq + r;
 
-  // Identify Exact M/G/1 Case
-  // For M/G/1, Allen-Cunneen yields: Lq = [rho^2 / (1-rho)] * [(1 + Cs^2)/2]
-  // This is exactly the Pollaczek-Khinchine formula.
   const isMG1 = (actualS === 1) && isPoissonArrival && !isPoissonService;
-
-  // If M/G/1, it is EXACT, not approximate.
   const isReallyApprox = isGGS && !isMG1;
 
   let approxNote: string | undefined = undefined;
@@ -330,7 +397,7 @@ export const calculateTheoreticalMetrics = (
   else if (isReallyApprox) approxNote = "G/G/s Allen-Cunneen Approximation";
   else if (breakdownMode) approxNote = "Adjusted for Availability (Effective Service Rate)";
 
-  // --- HEAVY TRAFFIC APPROXIMATION (Kingman / Sakasegawa) ---
+  // --- HEAVY TRAFFIC APPROXIMATION ---
   let heavyTrafficLq = 0;
   let heavyTrafficWq = 0;
 
@@ -354,33 +421,23 @@ export const calculateTheoreticalMetrics = (
 
 /**
  * Solves the Jackson Network Traffic Equations.
- * Lambda_i = Gamma_i + Sum(Lambda_j * P_ji)
- * 
- * Uses simple iterative solver (Fixed-point iteration) which converges if system is stable.
  */
 export const solveJacksonNetwork = (nodes: NetworkNode[], links: NetworkLink[]): Map<string, number> => {
   const lambdas = new Map<string, number>();
-  
-  // Initialize with external arrival rates (gamma)
   nodes.forEach(n => lambdas.set(n.id, n.isSource ? n.externalLambda : 0));
 
-  // Iterate to converge
-  // Equation: L[i] = Gamma[i] + Sum(L[j] * P[j->i])
   for (let iter = 0; iter < 50; iter++) {
     let maxDiff = 0;
     const nextLambdas = new Map<string, number>();
 
     nodes.forEach(targetNode => {
       let incoming = targetNode.isSource ? targetNode.externalLambda : 0;
-      
-      // Add flow from other nodes
       links.forEach(link => {
         if (link.targetId === targetNode.id) {
           const sourceLambda = lambdas.get(link.sourceId) || 0;
           incoming += sourceLambda * link.probability;
         }
       });
-      
       const diff = Math.abs(incoming - (lambdas.get(targetNode.id) || 0));
       if (diff > maxDiff) maxDiff = diff;
       nextLambdas.set(targetNode.id, incoming);
@@ -389,13 +446,11 @@ export const solveJacksonNetwork = (nodes: NetworkNode[], links: NetworkLink[]):
     nodes.forEach(n => lambdas.set(n.id, nextLambdas.get(n.id) || 0));
     if (maxDiff < 0.0001) break;
   }
-  
   return lambdas;
 };
 
 /**
  * Generates cost data across a range of server counts.
- * Calculates Total Cost = (Server Cost * s) + (Waiting Cost * Lq)
  */
 export const generateCostOptimizationData = (
   lambda: number,
@@ -417,14 +472,13 @@ export const generateCostOptimizationData = (
     if (model === QueueModel.MMINF) break;
 
     const metrics = calculateTheoreticalMetrics(
-      lambda, mu, s, model, K, 
+      lambda, mu, s, model, K, Infinity, // Default population infinite
       arrivalType, erlangK, serviceType, erlangServiceK
     );
 
     if (metrics.isStable) {
       const costServers = s * costPerServer;
       const costWaiting = metrics.lq * costPerWait; 
-      
       results.push({
         servers: s,
         costServers,
@@ -456,7 +510,7 @@ export interface SensitivityResult {
 }
 
 /**
- * Sensitivity Analysis: Generates theoretical metrics by varying a specific parameter.
+ * Sensitivity Analysis
  */
 export const calculateSensitivity = (
   baseConfig: SimulationConfig,
@@ -468,15 +522,11 @@ export const calculateSensitivity = (
 ): SensitivityResult[] => {
   const results: SensitivityResult[] = [];
   const [min, max] = range;
-
-  // Calculate efficiency
   const avgEff = baseConfig.efficiencyMode === 'MIXED' ? (baseConfig.seniorityRatio * 1.5) + ((1 - baseConfig.seniorityRatio) * 0.7) : 1.0;
 
   for (let val = min; val <= max; val += step) {
-    // Round val to avoid floating point anomalies
     const currentVal = Math.round(val * 100) / 100;
     
-    // Override base params
     let s = baseConfig.serverCount;
     let lambda = baseConfig.lambda;
     let mu = 60 / baseConfig.avgServiceTime;
@@ -487,14 +537,13 @@ export const calculateSensitivity = (
 
     const metrics = calculateTheoreticalMetrics(
       lambda, mu, s, 
-      baseConfig.model, baseConfig.capacity, 
+      baseConfig.model, baseConfig.capacity, baseConfig.populationSize,
       baseConfig.arrivalType, baseConfig.arrivalK, 
       baseConfig.serviceType, baseConfig.serviceK, 
       avgEff, baseConfig.breakdownMode, baseConfig.mtbf, baseConfig.mttr
     );
 
     const costServers = s * costPerServer;
-    // For cost calculation, if unstable, we assume max cost or infinity
     const costWaiting = metrics.isStable ? metrics.lq * costPerWait : (costPerWait * 100); 
 
     results.push({
@@ -510,31 +559,17 @@ export const calculateSensitivity = (
   return results;
 }
 
-/**
- * Generates a random variable from an Exponential distribution.
- * Uses Inverse Transform Sampling.
- * @param rate The rate parameter (λ). Mean = 1/rate.
- */
 export const nextExponential = (rate: number): number => {
   return -Math.log(Math.random()) / rate;
 };
 
-/**
- * Generates a random duration based on the selected distribution type.
- * @param type Distribution enum
- * @param mean Desired mean value
- * @param kParam Shape parameter (only for Erlang)
- */
 export const nextDistribution = (type: DistributionType, mean: number, kParam: number = 2): number => {
   switch (type) {
     case DistributionType.DETERMINISTIC:
       return mean;
     case DistributionType.UNIFORM:
-      // Uniform [0, 2*mean] provides a mean of 'mean'
       return Math.random() * 2 * mean;
     case DistributionType.ERLANG:
-      // Erlang-k is the sum of k independent exponential variables.
-      // Each stage has a mean of (mean / k), so rate = k / mean.
       let sum = 0;
       const rate = kParam / mean;
       for (let i = 0; i < kParam; i++) {
@@ -542,23 +577,18 @@ export const nextDistribution = (type: DistributionType, mean: number, kParam: n
       }
       return sum;
     case DistributionType.TRACE:
-      return mean; // Fallback if trace called via nextDistribution (should typically be handled by Engine index)
+      return mean;
     case DistributionType.POISSON:
     default:
-      // Standard exponential inter-arrival/service time
       return nextExponential(1 / mean);
   }
 };
-
-/**
- * STATISTICAL ANALYSIS HELPERS
- */
 
 export interface DataStats {
   mean: number;
   variance: number;
   stdDev: number;
-  cv: number; // Coefficient of Variation
+  cv: number;
   min: number;
   max: number;
   count: number;
@@ -566,10 +596,8 @@ export interface DataStats {
 
 export const calculateStats = (data: number[]): DataStats => {
   if (data.length === 0) return { mean: 0, variance: 0, stdDev: 0, cv: 0, min: 0, max: 0, count: 0 };
-  
   const sum = data.reduce((a, b) => a + b, 0);
   const mean = sum / data.length;
-  
   const sqDiffSum = data.reduce((a, b) => a + Math.pow(b - mean, 2), 0);
   const variance = sqDiffSum / data.length;
   const stdDev = Math.sqrt(variance);
@@ -610,14 +638,11 @@ export const generateHistogram = (data: number[], buckets: number = 20) => {
 
 export const recommendDistribution = (stats: DataStats): { type: string, confidence: string } => {
   const cv = stats.cv;
-  // Heuristics for distribution fitting based on Coeff of Variation
   if (cv < 0.1) return { type: 'Deterministic', confidence: 'High' };
   if (cv >= 0.9 && cv <= 1.1) return { type: 'Poisson (Exponential)', confidence: 'High' };
   if (cv < 0.9) return { type: `Erlang (k ≈ ${(1/(cv*cv)).toFixed(1)})`, confidence: 'Medium' };
   return { type: 'General / Hyperexponential', confidence: 'Low' };
 };
-
-// --- EXPORT UTILITIES ---
 
 export const downloadCSV = (content: string, filename: string) => {
   const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });

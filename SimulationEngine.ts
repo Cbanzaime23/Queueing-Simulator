@@ -14,7 +14,8 @@ import {
     DepartedCustomer,
     CustomerLogEntry,
     ChartDataPoint,
-    SkillType
+    SkillType,
+    SimulationEventType
 } from './types';
 import { nextDistribution, calculateTheoreticalMetrics, nextExponential, calculateEWT } from './mathUtils';
 
@@ -72,7 +73,8 @@ export class SimulationEngine {
             history: [...this.state.history],
             orbit: [...this.state.orbit], // Clone orbit
             recentlyDeparted: [...this.state.recentlyDeparted], // copy visual artifacts
-            recentlyBalked: [...this.state.recentlyBalked] // copy visual artifacts
+            recentlyBalked: [...this.state.recentlyBalked], // copy visual artifacts
+            events: [...this.state.events] // Copy event buffer
             // NOTE: We do NOT clone completedCustomers here for performance reasons as it grows unbounded.
             // React state will hold the reference.
         };
@@ -131,6 +133,49 @@ export class SimulationEngine {
             return;
         }
 
+        // --- FINITE POPULATION LOGIC (M/M/s//N) ---
+        if (this.config.model === QueueModel.MMS_N_POP) {
+            // Count total current customers in system
+            let currentInSystem = this.state.queue.length;
+            this.state.servers.forEach(s => {
+                if (s.state === ServerState.BUSY) {
+                    currentInSystem += s._activeBatch ? s._activeBatch.length : 1;
+                }
+                currentInSystem += s.queue.length;
+            });
+
+            // If system has full population, no more arrivals possible
+            if (currentInSystem >= this.config.populationSize) {
+                this.nextArrivalTime = Infinity;
+                return;
+            }
+
+            // Effective Lambda = (N - n) * lambda_per_customer
+            const lambdaPerUser = this.config.lambda; // user config is lambda per person/hour usually for this model, or aggregate?
+            // Standard convention: Input is usually "Arrival Rate per User" or "Mean Time to Arrive per User (1/lambda)".
+            // Let's assume input lambda is "Arrivals/hr per customer" for scaling consistency.
+            
+            const n = currentInSystem;
+            const N = this.config.populationSize;
+            const effectiveLambda = (N - n) * lambdaPerUser;
+            
+            if (effectiveLambda <= 0) {
+                 this.nextArrivalTime = Infinity;
+                 return;
+            }
+
+            const meanInterArrival = 60 / effectiveLambda;
+            // Assuming Exponential for Finite Pop model (Standard Machine Repair)
+            // Even if User selected Erlang, applying (N-n) scaling to Erlang is complex. 
+            // We use Exponential for the "next event" logic of a pooled process.
+            const delay = nextExponential(effectiveLambda / 60); 
+            
+            // Note: Since rate is state-dependent, we calculate next arrival from NOW.
+            this.nextArrivalTime = this.state.currentTime + delay;
+            return;
+        }
+
+        // --- STANDARD INFINITE POPULATION LOGIC ---
         // Determine lambda based on CURRENT time
         const currentLambda = this.getDynamicLambda(this.state.currentTime);
         
@@ -150,6 +195,9 @@ export class SimulationEngine {
      * @param deltaTimeMinutes Time to advance in minutes
      */
     public tick(deltaTimeMinutes: number) {
+        // Reset Event Buffer for this tick
+        this.state.events = [];
+
         let newTime = this.state.currentTime + deltaTimeMinutes;
         
         // Wall Clock Time calculation
@@ -207,6 +255,13 @@ export class SimulationEngine {
                     // Update arrival time to now for statistics calculation (Wait Time is per-attempt)
                     c.arrivalTime = newTime; 
                     
+                    this.state.events.push({
+                        id: Math.random().toString(),
+                        type: SimulationEventType.ORBIT_RETRY,
+                        entityId: c.id,
+                        time: newTime
+                    });
+
                     // We call processSingleArrival but avoid double counting the *attempt* if tracking unique visitors,
                     // but for load analysis, every attempt is an arrival.
                     this.processSingleArrival(newTime, c);
@@ -239,7 +294,12 @@ export class SimulationEngine {
                     this.traceIndex++; // Move to next line in file
                     this.scheduleNextArrival(); // Will peek traceIndex
                     if (this.nextArrivalTime === Infinity) break; // End of file
+                } else if (this.config.model === QueueModel.MMS_N_POP) {
+                    // For Finite Population, we reschedule based on new state n+1
+                    // Since one arrived, n increased, rate decreased.
+                    this.scheduleNextArrival();
                 } else {
+                    // Standard Infinite Population
                     // Use the rate AT the time of this arrival to schedule the next one
                     const currentLambda = this.getDynamicLambda(this.nextArrivalTime);
                     const meanInterArrival = 60 / Math.max(0.1, currentLambda);
@@ -326,6 +386,33 @@ export class SimulationEngine {
 
     // --- INTERNAL LOGIC ---
 
+    /**
+     * Updates the server state and records the transition in the timeline.
+     * @param server The server object to update
+     * @param newState The new state to transition to
+     * @param time The simulation time of the transition
+     */
+    private setServerState(server: Server, newState: ServerState, time: number) {
+        if (server.state === newState) return;
+
+        // Close the current timeline segment
+        if (server.timeline.length > 0) {
+            const lastSegment = server.timeline[server.timeline.length - 1];
+            if (lastSegment.end === null) {
+                lastSegment.end = time;
+            }
+        }
+
+        // Start a new timeline segment
+        server.timeline.push({
+            state: newState,
+            start: time,
+            end: null
+        });
+
+        server.state = newState;
+    }
+
     private createNewServer(id: number): Server {
         // Handle Heterogeneous Efficiency Logic
         let efficiency = 1.0;
@@ -361,6 +448,9 @@ export class SimulationEngine {
              nextBreakdownTime = this.state ? this.state.currentTime + nextExponential(1/this.config.mtbf) : nextExponential(1/this.config.mtbf);
         }
 
+        // Ensure we capture start time
+        const startTime = this.state ? this.state.currentTime : 0;
+
         return {
             id,
             state: ServerState.IDLE,
@@ -372,7 +462,13 @@ export class SimulationEngine {
             _activeBatch: [],
             utilizationHistory: [],
             totalBusyTime: 0,
-            startTime: this.state ? this.state.currentTime : 0
+            startTime,
+            // Initialize timeline with IDLE state
+            timeline: [{
+                state: ServerState.IDLE,
+                start: startTime,
+                end: null
+            }]
         };
     }
 
@@ -408,7 +504,8 @@ export class SimulationEngine {
             isPanic: false,
             recentlyDeparted: [],
             recentlyBalked: [],
-            completedCustomers: []
+            completedCustomers: [],
+            events: []
         };
     }
 
@@ -434,8 +531,16 @@ export class SimulationEngine {
                     server._activeCustomer.finishTime! += repairDuration;
                 }
                 
-                server.state = ServerState.OFFLINE;
+                this.setServerState(server, ServerState.OFFLINE, newTime);
                 server.nextBreakdownTime = server.repairTime + nextExponential(1/this.config.mtbf);
+
+                // EMIT EVENT
+                this.state.events.push({
+                    id: Math.random().toString(),
+                    type: SimulationEventType.BREAKDOWN,
+                    entityId: server.id,
+                    time: newTime
+                });
             }
             
             // Check for REPAIR finish
@@ -444,9 +549,9 @@ export class SimulationEngine {
                      newTime >= server.repairTime) {
                 
                 if (server._activeCustomer || (server._activeBatch && server._activeBatch.length > 0)) {
-                    server.state = ServerState.BUSY;
+                    this.setServerState(server, ServerState.BUSY, newTime);
                 } else {
-                    server.state = ServerState.IDLE;
+                    this.setServerState(server, ServerState.IDLE, newTime);
                 }
             }
         });
@@ -582,7 +687,11 @@ export class SimulationEngine {
             currentInSystem += s.queue.length; // Add dedicated queues
         });
         
-        const isFull = this.config.model === QueueModel.MMSK && currentInSystem >= this.config.capacity;
+        // Blocking Logic for MMSK
+        // For MMS_N_POP (Finite Pop), max customers = N. It shouldn't get here if full, but double check.
+        // But for Finite Pop, "blocking" usually means they wait outside, which is handled by arrival rate logic.
+        const isMMSK = this.config.model === QueueModel.MMSK;
+        const isFull = isMMSK && currentInSystem >= this.config.capacity;
 
         let isBalking = false;
         if (this.config.impatientMode && !isFull && this.config.model !== QueueModel.MMINF) {
@@ -618,6 +727,14 @@ export class SimulationEngine {
                 cToOrbit.isRetrial = true;
                 
                 this.state.orbit.push(cToOrbit);
+
+                // EMIT ORBIT ENTRY
+                this.state.events.push({
+                    id: Math.random().toString(),
+                    type: SimulationEventType.ORBIT_ENTRY,
+                    entityId: cToOrbit.id,
+                    time: arrivalTime
+                });
                 
                 // Still mark as "balked" for UI flash if needed, but not counted as lost
                 // We add a visual clone for the balk effect if it was a fresh arrival
@@ -627,18 +744,36 @@ export class SimulationEngine {
                 
             } else {
                 // LOSS LOGIC
-                if (isBalking) {
+                if (isBalking || isFull) {
                     this.state.customersImpatient += 1;
                     // Add to visual balk queue to show animation
                     const visCustomer = existingCustomer || this.createFactoryCustomer(arrivalTime);
                     visCustomer.balkTime = arrivalTime;
                     this.state.recentlyBalked.push(visCustomer);
+                    
+                    // EMIT BALK
+                    this.state.events.push({
+                        id: Math.random().toString(),
+                        type: SimulationEventType.BALK,
+                        entityId: visCustomer.id,
+                        time: arrivalTime
+                    });
                 }
             }
             return;
         }
 
         const newCustomer = existingCustomer || this.createFactoryCustomer(arrivalTime);
+
+        // EMIT VIP ARRIVAL
+        if (newCustomer.priority === 1) {
+            this.state.events.push({
+                id: Math.random().toString(),
+                type: SimulationEventType.VIP_ARRIVAL,
+                entityId: newCustomer.id,
+                time: arrivalTime
+            });
+        }
 
         if (this.config.model === QueueModel.MMINF) {
             // Infinite servers always available
@@ -655,7 +790,12 @@ export class SimulationEngine {
                 queue: [],
                 utilizationHistory: [],
                 totalBusyTime: 0,
-                startTime: arrivalTime
+                startTime: arrivalTime,
+                timeline: [{
+                    state: ServerState.BUSY,
+                    start: arrivalTime,
+                    end: null
+                }]
             };
             newCustomer.startTime = arrivalTime;
             newCustomer.finishTime = arrivalTime + newCustomer.serviceTime;
@@ -809,12 +949,27 @@ export class SimulationEngine {
                         removed.isRetrial = true;
                         this.state.orbit.push(removed);
                         
+                        this.state.events.push({
+                            id: Math.random().toString(),
+                            type: SimulationEventType.ORBIT_ENTRY,
+                            entityId: removed.id,
+                            time: newTime
+                        });
+
                         // Optional: Add a visual artifact for "left queue"
                         this.state.recentlyBalked.push({ ...removed, id: 'renege-' + removed.id, balkTime: newTime });
                     } else {
                         this.state.customersImpatient += 1;
                         removed.balkTime = newTime;
                         this.state.recentlyBalked.push(removed);
+
+                        // EMIT RENEGE
+                        this.state.events.push({
+                            id: Math.random().toString(),
+                            type: SimulationEventType.RENEGE,
+                            entityId: removed.id,
+                            time: newTime
+                        });
                     }
                 }
             }
@@ -919,7 +1074,7 @@ export class SimulationEngine {
             this.updateAccumulator(this.state.statsWq, wait);
         });
 
-        server.state = ServerState.BUSY;
+        this.setServerState(server, ServerState.BUSY, this.state.currentTime);
         server._activeBatch = batch;
         // For backward compatibility / display logic of single active
         server._activeCustomer = batch[0];
@@ -927,6 +1082,8 @@ export class SimulationEngine {
     }
 
     private handleDepartures(newTime: number) {
+        let anyoneDeparted = false;
+
         for (let i = this.state.servers.length - 1; i >= 0; i--) {
             const server = this.state.servers[i];
             
@@ -936,6 +1093,7 @@ export class SimulationEngine {
                 const representative = server._activeBatch[0];
                 
                 if (representative.finishTime! <= newTime) {
+                    anyoneDeparted = true;
                     // Process stats for ALL in batch
                     server._activeBatch.forEach(customer => {
                         this.state.customersServed += 1;
@@ -976,7 +1134,7 @@ export class SimulationEngine {
                     if (this.config.model === QueueModel.MMINF) {
                         this.state.servers.splice(i, 1);
                     } else {
-                        server.state = ServerState.IDLE;
+                        this.setServerState(server, ServerState.IDLE, newTime);
                         server.currentCustomerId = undefined;
                         server._activeCustomer = undefined;
                         server._activeBatch = []; // Clear batch
@@ -989,6 +1147,17 @@ export class SimulationEngine {
                     }
                 }
             }
+        }
+
+        // --- FINITE POPULATION LOGIC ---
+        // If anyone departed, the system size decreased, so the arrival rate increases.
+        // We must ensure the next arrival is scheduled according to the new N-n state.
+        if (anyoneDeparted && this.config.model === QueueModel.MMS_N_POP) {
+            // For simple Poisson thinning/rescheduling, just call schedule.
+            // If nextArrivalTime was Infinity (because system was full), this will restart it.
+            // If nextArrivalTime was valid but far away (low rate), this might bring it closer.
+            // NOTE: Simplest heuristic for this loop-based engine is to re-evaluate.
+            this.scheduleNextArrival();
         }
     }
 
@@ -1008,6 +1177,7 @@ export class SimulationEngine {
             currentServers,
             this.config.model,
             this.config.capacity,
+            this.config.populationSize, // Pass population size
             this.config.arrivalType,
             this.config.arrivalK,
             this.config.serviceType,

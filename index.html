@@ -41,6 +41,25 @@
         .animate-depart-up {
             animation: departUp 1s ease-in forwards;
         }
+
+        @keyframes stressShake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-1px) rotate(-2deg); }
+            75% { transform: translateX(1px) rotate(2deg); }
+        }
+        .animate-stress {
+            animation: stressShake 0.15s ease-in-out infinite;
+        }
+
+        /* Floating Reaction System */
+        @keyframes floatFade {
+            0% { opacity: 0; transform: translateY(10px) scale(0.8); }
+            10% { opacity: 1; transform: translateY(0) scale(1.1); }
+            100% { opacity: 0; transform: translateY(-50px) scale(1); }
+        }
+        .animate-float-fade {
+            animation: floatFade 2s ease-out forwards;
+        }
     </style>
 <script type="importmap">
 {
@@ -50,7 +69,8 @@
     "react-dom": "https://esm.sh/react-dom@18.2.0",
     "react-dom/": "https://esm.sh/react-dom@18.2.0/",
     "recharts": "https://esm.sh/recharts@2.12.7?external=react,react-dom",
-    "react-dropzone": "https://esm.sh/react-dropzone@14.2.3?external=react,react-dom"
+    "react-dropzone": "https://esm.sh/react-dropzone@14.2.3?external=react,react-dom",
+    "xlsx": "https://esm.sh/xlsx@0.18.5"
   }
 }
 </script>

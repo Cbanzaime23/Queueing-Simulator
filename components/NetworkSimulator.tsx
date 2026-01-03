@@ -6,21 +6,9 @@ import { solveJacksonNetwork, calculateTheoreticalMetrics } from '../mathUtils';
 
 const NetworkSimulator: React.FC = () => {
     // --- State ---
-    const [nodes, setNodes] = useState<NetworkNode[]>([
-        { id: 'n1', name: 'Check-In', x: 100, y: 150, serverCount: 2, avgServiceTime: 5, capacity: 9999, isSource: true, externalLambda: 20, classARatio: 0.3, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
-        { id: 'n2', name: 'Security', x: 400, y: 150, serverCount: 3, avgServiceTime: 4, capacity: 10, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
-        { id: 'n3', name: 'Manual Check', x: 400, y: 350, serverCount: 1, avgServiceTime: 10, capacity: 5, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
-    ]);
-    
-    const [links, setLinks] = useState<NetworkLink[]>([
-        { id: 'l1', sourceId: 'n1', targetId: 'n2', probability: 1.0, probA: 1.0, probB: 1.0 },
-        { id: 'l2', sourceId: 'n2', targetId: 'n3', probability: 0.2, probA: 0.05, probB: 0.3 }, // VIPs (A) skip manual check mostly
-    ]);
-
-    const [resourcePools, setResourcePools] = useState<ResourcePool[]>([
-        { id: 'r1', name: 'Doctors', totalCount: 2, availableCount: 2, color: 'bg-pink-500' },
-        { id: 'r2', name: 'Scanners', totalCount: 1, availableCount: 1, color: 'bg-teal-500' }
-    ]);
+    const [nodes, setNodes] = useState<NetworkNode[]>([]);
+    const [links, setLinks] = useState<NetworkLink[]>([]);
+    const [resourcePools, setResourcePools] = useState<ResourcePool[]>([]);
 
     const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
     const [engine, setEngine] = useState<NetworkEngine | null>(null);
@@ -35,19 +23,67 @@ const NetworkSimulator: React.FC = () => {
     // Theoretical State
     const [effLambdas, setEffLambdas] = useState<Map<string, number>>(new Map());
 
+    // --- Scenario Loader ---
+    const loadScenario = (type: 'AIRPORT' | 'HOSPITAL' | 'EMPTY') => {
+        setIsRunning(false);
+        setSimState(null);
+        setSelectedNodeId(null);
+
+        if (type === 'EMPTY') {
+            setNodes([]);
+            setLinks([]);
+            setResourcePools([]);
+        } else if (type === 'AIRPORT') {
+            setResourcePools([
+                { id: 'r1', name: 'Supervisors', totalCount: 2, availableCount: 2, color: 'bg-pink-500' },
+                { id: 'r2', name: 'Scanners', totalCount: 1, availableCount: 1, color: 'bg-teal-500' }
+            ]);
+            setNodes([
+                { id: 'n1', name: 'Check-In', x: 100, y: 150, serverCount: 2, avgServiceTime: 5, capacity: 9999, isSource: true, externalLambda: 20, classARatio: 0.3, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'n2', name: 'Security', x: 400, y: 150, serverCount: 3, avgServiceTime: 4, capacity: 10, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'n3', name: 'Manual Check', x: 400, y: 350, serverCount: 1, avgServiceTime: 10, capacity: 5, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+            ]);
+            setLinks([
+                { id: 'l1', sourceId: 'n1', targetId: 'n2', probability: 1.0, probA: 1.0, probB: 1.0 },
+                { id: 'l2', sourceId: 'n2', targetId: 'n3', probability: 0.2, probA: 0.05, probB: 0.3 }, 
+            ]);
+        } else if (type === 'HOSPITAL') {
+            setResourcePools([
+                { id: 'rp_doc', name: 'Doctors', totalCount: 5, availableCount: 5, color: 'bg-indigo-500' },
+                { id: 'rp_nurse', name: 'Nurses', totalCount: 4, availableCount: 4, color: 'bg-rose-500' },
+                { id: 'rp_tech', name: 'Lab Techs', totalCount: 2, availableCount: 2, color: 'bg-cyan-500' }
+            ]);
+            setNodes([
+                // Registration
+                { id: 'h1', name: 'Registration', x: 50, y: 200, serverCount: 2, avgServiceTime: 3, capacity: 50, isSource: true, externalLambda: 15, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, classARatio: 0.1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                // Triage (Requires Nurse)
+                { id: 'h2', name: 'Triage Nurse', x: 250, y: 200, serverCount: 3, avgServiceTime: 5, capacity: 20, isSource: false, externalLambda: 0, resourcePoolId: 'rp_nurse', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                // GP (Requires Doctor)
+                { id: 'h3', name: 'Gen. Practice', x: 450, y: 100, serverCount: 4, avgServiceTime: 15, capacity: 20, isSource: false, externalLambda: 0, resourcePoolId: 'rp_doc', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                // Lab (Requires Tech)
+                { id: 'h4', name: 'X-Ray / Lab', x: 450, y: 350, serverCount: 2, avgServiceTime: 10, capacity: 10, isSource: false, externalLambda: 0, resourcePoolId: 'rp_tech', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                // Pharmacy
+                { id: 'h5', name: 'Pharmacy', x: 700, y: 200, serverCount: 1, avgServiceTime: 4, capacity: 15, isSource: false, externalLambda: 0, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } }
+            ]);
+            setLinks([
+                { id: 'l_h1_h2', sourceId: 'h1', targetId: 'h2', probability: 1.0, probA: 1.0, probB: 1.0 },
+                { id: 'l_h2_h3', sourceId: 'h2', targetId: 'h3', probability: 0.7, probA: 0.9, probB: 0.65 }, // Most go to GP
+                { id: 'l_h2_h4', sourceId: 'h2', targetId: 'h4', probability: 0.3, probA: 0.1, probB: 0.35 }, // Some go straight to lab
+                { id: 'l_h4_h3', sourceId: 'h4', targetId: 'h3', probability: 1.0, probA: 1.0, probB: 1.0 }, // Lab results go to GP
+                { id: 'l_h3_h5', sourceId: 'h3', targetId: 'h5', probability: 0.6, probA: 0.8, probB: 0.5 }, // 60% need meds
+                // Remainder of h3 (40%) exits system
+            ]);
+        }
+    };
+
     // --- Effects ---
     useEffect(() => {
-        // Init engine
-        const eng = new NetworkEngine(nodes, links, resourcePools);
-        setEngine(eng);
-        setSimState(eng.getState());
-        
-        // Calculate Theoreticals
-        const lambdaMap = solveJacksonNetwork(nodes, links);
-        setEffLambdas(lambdaMap);
-    }, []); // Run once on mount
+        // Initial load
+        loadScenario('HOSPITAL');
+    }, []);
 
     useEffect(() => {
+        // When running, update state in loop
         let frameId: number;
         if (isRunning && engine) {
             const loop = () => {
@@ -56,15 +92,27 @@ const NetworkSimulator: React.FC = () => {
                 frameId = requestAnimationFrame(loop);
             };
             frameId = requestAnimationFrame(loop);
+        } else if (!engine && nodes.length > 0) {
+            // Re-init engine if nodes changed but not running
+             const eng = new NetworkEngine(nodes, links, resourcePools);
+             setEngine(eng);
+             setSimState(eng.getState());
         }
         return () => cancelAnimationFrame(frameId);
-    }, [isRunning, engine]);
+    }, [isRunning, engine, nodes]); // Nodes dependency ensures re-init
 
     // Recalculate theoreticals when structure changes
     useEffect(() => {
         const lambdaMap = solveJacksonNetwork(nodes, links);
         setEffLambdas(lambdaMap);
-    }, [nodes, links]);
+        
+        // Re-create engine to reflect structural changes immediately
+        if (!isRunning) {
+            const eng = new NetworkEngine(nodes, links, resourcePools);
+            setEngine(eng);
+            setSimState(eng.getState());
+        }
+    }, [nodes, links, resourcePools]);
 
     // --- Handlers ---
     const handleNodeDragStart = (e: React.MouseEvent, id: string) => {
@@ -98,6 +146,9 @@ const NetworkSimulator: React.FC = () => {
     };
 
     const addLink = (sourceId: string, targetId: string) => {
+        // Prevent duplicates
+        if (links.some(l => l.sourceId === sourceId && l.targetId === targetId)) return;
+
         const newLink: NetworkLink = {
             id: Math.random().toString(36).substr(2, 5),
             sourceId,
@@ -113,9 +164,13 @@ const NetworkSimulator: React.FC = () => {
     // --- Render Helpers ---
     const renderNode = (node: NetworkNode) => {
         // Live State if available, else Config State
-        const liveNode = simState ? simState.nodes.find((n: NetworkNode) => n.id === node.id) : node;
-        const qLength = liveNode.queue.length;
-        const busyServers = liveNode.servers.filter((s: any) => s.state === 'BUSY').length;
+        // Safe access to simState.nodes with fallback to config node
+        const liveNode = (simState?.nodes?.find((n: NetworkNode) => n.id === node.id)) || node;
+        
+        // Safe access to array lengths
+        const qLength = liveNode.queue?.length || 0;
+        const busyServers = liveNode.servers?.filter((s: any) => s.state === 'BUSY').length || 0;
+        const blockedCount = liveNode.stats?.blockedCount || 0;
         
         // Theoretical Metrics
         const lambdaEff = effLambdas.get(node.id) || 0;
@@ -128,7 +183,7 @@ const NetworkSimulator: React.FC = () => {
         return (
             <div 
                 key={node.id}
-                className={`absolute w-32 bg-white rounded-lg shadow-lg border-2 select-none group hover:border-blue-400 transition-colors ${selectedNodeId === node.id ? 'border-blue-600 ring-2 ring-blue-200' : 'border-slate-200'}`}
+                className={`absolute w-36 bg-white rounded-lg shadow-lg border-2 select-none group hover:border-blue-400 transition-colors z-10 ${selectedNodeId === node.id ? 'border-blue-600 ring-2 ring-blue-200' : 'border-slate-200'}`}
                 style={{ left: node.x, top: node.y }}
                 onMouseDown={(e) => { handleNodeDragStart(e, node.id); setSelectedNodeId(node.id); }}
             >
@@ -143,7 +198,7 @@ const NetworkSimulator: React.FC = () => {
                     {/* Visual Queue */}
                     <div className="flex gap-1 h-3 items-end">
                         {Array.from({ length: Math.min(8, qLength) }).map((_, i) => (
-                            <div key={i} className={`w-2 h-2 rounded-full ${liveNode.queue[i] ? liveNode.queue[i].color : 'bg-red-400'}`}></div>
+                            <div key={i} className={`w-2 h-2 rounded-full ${liveNode.queue && liveNode.queue[i] ? liveNode.queue[i].color : 'bg-red-400'}`}></div>
                         ))}
                         {qLength > 8 && <span className="text-[9px] text-slate-400">+{qLength - 8}</span>}
                     </div>
@@ -155,31 +210,22 @@ const NetworkSimulator: React.FC = () => {
                     </div>
 
                     {/* Blocked Stats (Only if non-zero) */}
-                    {liveNode.stats.blockedCount > 0 && (
+                    {blockedCount > 0 && (
                         <div className="text-[9px] font-bold text-red-500 flex items-center justify-between">
                             <span>Blocked:</span>
-                            <span>{liveNode.stats.blockedCount}</span>
+                            <span>{blockedCount}</span>
                         </div>
                     )}
 
-                    {/* Batch Indicators */}
-                    <div className="flex gap-1">
-                        {node.serviceBatchSize && node.serviceBatchSize > 1 && (
-                            <span className="text-[8px] bg-indigo-100 text-indigo-700 px-1 rounded font-bold">
-                                Batch:{node.serviceBatchSize}
-                            </span>
-                        )}
-                    </div>
-
                     {/* Resource Dependency Indicator */}
                     {reqResource && (
-                         <div className={`text-[9px] font-bold px-1 rounded text-white flex items-center gap-1 ${reqResource.color}`}>
+                         <div className={`text-[9px] font-bold px-1 rounded text-white flex items-center gap-1 ${reqResource.color} shadow-sm`}>
                              <i className="fa-solid fa-user-doctor"></i> Req: {reqResource.name}
                          </div>
                     )}
 
                     {/* Theoretical Badge / Strategy Badge */}
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-center mt-1">
                         <div className={`text-[8px] px-1 py-0.5 rounded text-center font-mono ${theorMetrics.rho >= 1 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
                             ρ={theorMetrics.rho.toFixed(2)}
                         </div>
@@ -213,11 +259,11 @@ const NetworkSimulator: React.FC = () => {
                     const target = nodes.find(n => n.id === link.targetId);
                     if (!source || !target) return null;
 
-                    // Simple center-to-center line
-                    const x1 = source.x + 64; // Center width
-                    const y1 = source.y + 50; // Center height
-                    const x2 = target.x + 64;
-                    const y2 = target.y + 50;
+                    // Simple center-to-center line with offset for width (36*4 = 144px width approx, center is 72)
+                    const x1 = source.x + 72; 
+                    const y1 = source.y + 60; 
+                    const x2 = target.x + 72;
+                    const y2 = target.y + 60;
 
                     // Visual Feedback for Blocking
                     const isBlocked = simState?.recentBlockedLinks?.includes(link.id);
@@ -254,10 +300,25 @@ const NetworkSimulator: React.FC = () => {
     return (
         <div className="flex h-[calc(100vh-100px)] gap-4">
             {/* Sidebar Controls */}
-            <div className="w-80 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-                <div className="p-4 border-b bg-slate-50">
+            <div className="w-80 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden shrink-0">
+                <div className="p-4 border-b bg-slate-50 space-y-3">
                     <h2 className="text-sm font-black uppercase text-slate-700 tracking-wider">Network Builder</h2>
-                    <div className="flex gap-2 mt-4">
+                    
+                    {/* Scenario Selector */}
+                    <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Scenario Preset</label>
+                        <select 
+                            onChange={(e) => loadScenario(e.target.value as any)} 
+                            className="w-full text-xs font-bold text-slate-700 p-2 border rounded bg-white"
+                            defaultValue="HOSPITAL"
+                        >
+                            <option value="HOSPITAL">🏥 Hospital Outpatient (Resource Pools)</option>
+                            <option value="AIRPORT">✈️ Airport Security (Multi-Stage)</option>
+                            <option value="EMPTY">⚪ Blank Canvas</option>
+                        </select>
+                    </div>
+
+                    <div className="flex gap-2">
                         <button onClick={() => setIsRunning(!isRunning)} className={`flex-1 py-2 rounded text-xs font-bold text-white transition-colors ${isRunning ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-500 hover:bg-emerald-600'}`}>
                             <i className={`fa-solid ${isRunning ? 'fa-pause' : 'fa-play'} mr-2`}></i> {isRunning ? 'Pause' : 'Simulate'}
                         </button>
@@ -301,6 +362,23 @@ const NetworkSimulator: React.FC = () => {
                                             style={{ width: `${(pool.availableCount / pool.totalCount) * 100}%` }}
                                         ></div>
                                     </div>
+                                    {/* Resource Editor Mini (Only when stopped) */}
+                                    {!isRunning && (
+                                        <div className="flex justify-between items-center px-1">
+                                            <button 
+                                                onClick={() => {
+                                                    setResourcePools(prev => prev.map(p => p.id === pool.id ? {...p, totalCount: Math.max(1, p.totalCount - 1), availableCount: Math.max(1, p.totalCount - 1)} : p));
+                                                }}
+                                                className="text-[10px] text-slate-400 hover:text-red-500"
+                                            >-</button>
+                                            <button 
+                                                onClick={() => {
+                                                    setResourcePools(prev => prev.map(p => p.id === pool.id ? {...p, totalCount: p.totalCount + 1, availableCount: p.totalCount + 1} : p));
+                                                }}
+                                                className="text-[10px] text-slate-400 hover:text-green-500"
+                                            >+</button>
+                                        </div>
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -308,17 +386,15 @@ const NetworkSimulator: React.FC = () => {
                         {/* Resource Editor (Simple) */}
                         <div className="mt-3 pt-3 border-t border-slate-200">
                             <button className="text-[10px] text-blue-600 font-bold hover:underline" onClick={() => {
-                                // Add dummy resource logic for prototype
                                 const newId = `r${resourcePools.length + 1}`;
                                 setResourcePools([...resourcePools, { id: newId, name: `Resource ${newId}`, totalCount: 2, availableCount: 2, color: 'bg-indigo-500' }]);
-                                resetSim();
                             }}>+ Add Resource Type</button>
                         </div>
                     </div>
 
                     {/* Node Editor */}
                     {selectedNodeId ? (
-                        <div className="space-y-4 animate-fade-in">
+                        <div className="space-y-4 animate-fade-in bg-slate-50 p-3 rounded-lg border border-slate-200">
                             <h3 className="text-xs font-bold text-slate-400 uppercase border-b pb-1">Edit Node</h3>
                             {(() => {
                                 const node = nodes.find(n => n.id === selectedNodeId)!;
@@ -333,14 +409,12 @@ const NetworkSimulator: React.FC = () => {
                                                 <label className="block text-[10px] font-bold text-slate-500 uppercase">Servers</label>
                                                 <input type="number" min="1" max="20" value={node.serverCount} onChange={(e) => {
                                                     setNodes(nodes.map(n => n.id === node.id ? {...n, serverCount: parseInt(e.target.value)} : n));
-                                                    resetSim();
                                                 }} className="w-full p-2 border rounded text-xs" />
                                             </div>
                                             <div className="flex-1">
                                                 <label className="block text-[10px] font-bold text-slate-500 uppercase">Capacity</label>
                                                 <input type="number" min="1" max="9999" value={node.capacity} onChange={(e) => {
                                                     setNodes(nodes.map(n => n.id === node.id ? {...n, capacity: parseInt(e.target.value)} : n));
-                                                    resetSim();
                                                 }} className="w-full p-2 border rounded text-xs" />
                                             </div>
                                         </div>
@@ -348,7 +422,6 @@ const NetworkSimulator: React.FC = () => {
                                             <label className="block text-[10px] font-bold text-slate-500 uppercase">Avg Svc Time (min)</label>
                                             <input type="number" min="0.1" max="60" value={node.avgServiceTime} onChange={(e) => {
                                                 setNodes(nodes.map(n => n.id === node.id ? {...n, avgServiceTime: parseFloat(e.target.value)} : n));
-                                                resetSim();
                                             }} className="w-full p-2 border rounded text-xs" />
                                         </div>
 
@@ -359,32 +432,14 @@ const NetworkSimulator: React.FC = () => {
                                                 value={node.resourcePoolId || ''} 
                                                 onChange={(e) => {
                                                     setNodes(nodes.map(n => n.id === node.id ? {...n, resourcePoolId: e.target.value || undefined} : n));
-                                                    resetSim();
                                                 }}
-                                                className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-xs"
+                                                className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
                                             >
                                                 <option value="">None (Standard)</option>
                                                 {resourcePools.map(pool => (
                                                     <option key={pool.id} value={pool.id}>{pool.name} ({pool.totalCount})</option>
                                                 ))}
                                             </select>
-                                            <p className="text-[9px] text-slate-400 mt-1 italic">
-                                                Service blocks if resource is unavailable.
-                                            </p>
-                                        </div>
-
-                                        {/* Batch Config */}
-                                        <div className="pt-2 border-t">
-                                            <div className="mb-2">
-                                                <label className="block text-[10px] font-bold text-slate-500 uppercase">Service Batch Size</label>
-                                                <div className="flex gap-2 items-center">
-                                                    <input type="number" min="1" max="50" value={node.serviceBatchSize || 1} onChange={(e) => {
-                                                        setNodes(nodes.map(n => n.id === node.id ? {...n, serviceBatchSize: parseInt(e.target.value)} : n));
-                                                        resetSim();
-                                                    }} className="w-full p-2 border rounded text-xs" />
-                                                    <span className="text-[9px] text-slate-400">Processed at once</span>
-                                                </div>
-                                            </div>
                                         </div>
 
                                         {/* Routing Strategy Selector */}
@@ -394,25 +449,18 @@ const NetworkSimulator: React.FC = () => {
                                                 value={node.routingStrategy} 
                                                 onChange={(e) => {
                                                     setNodes(nodes.map(n => n.id === node.id ? {...n, routingStrategy: e.target.value as RoutingStrategy} : n));
-                                                    resetSim();
                                                 }}
-                                                className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-xs"
+                                                className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
                                             >
                                                 <option value={RoutingStrategy.PROBABILISTIC}>Probabilistic (Random)</option>
                                                 <option value={RoutingStrategy.SHORTEST_QUEUE}>Join Shortest Queue (JSQ)</option>
                                             </select>
-                                            {node.routingStrategy === RoutingStrategy.SHORTEST_QUEUE && (
-                                                <p className="text-[9px] text-purple-600 mt-1 italic">
-                                                    Ignores link probabilities. Balances load among connected nodes.
-                                                </p>
-                                            )}
                                         </div>
                                         
                                         <div className="pt-2 border-t">
                                             <label className="flex items-center gap-2">
                                                 <input type="checkbox" checked={node.isSource} onChange={(e) => {
                                                     setNodes(nodes.map(n => n.id === node.id ? {...n, isSource: e.target.checked} : n));
-                                                    resetSim();
                                                 }} />
                                                 <span className="text-xs font-bold text-slate-600">Is External Source?</span>
                                             </label>
@@ -422,26 +470,14 @@ const NetworkSimulator: React.FC = () => {
                                                         <label className="block text-[10px] font-bold text-slate-500 uppercase">Arrivals (λ/hr)</label>
                                                         <input type="number" min="1" value={node.externalLambda} onChange={(e) => {
                                                             setNodes(nodes.map(n => n.id === node.id ? {...n, externalLambda: parseInt(e.target.value)} : n));
-                                                            resetSim();
                                                         }} className="w-full p-2 border rounded text-xs" />
                                                     </div>
-                                                    
-                                                    {/* Arrival Batch Size */}
                                                     <div>
-                                                        <label className="block text-[10px] font-bold text-slate-500 uppercase">Arrival Group Size</label>
-                                                        <input type="number" min="1" max="50" value={node.arrivalBatchSize || 1} onChange={(e) => {
-                                                            setNodes(nodes.map(n => n.id === node.id ? {...n, arrivalBatchSize: parseInt(e.target.value)} : n));
-                                                            resetSim();
-                                                        }} className="w-full p-2 border rounded text-xs" />
-                                                    </div>
-
-                                                    <div>
-                                                        <label className="block text-[10px] font-bold text-slate-500 uppercase">Class A Ratio (Gold)</label>
+                                                        <label className="block text-[10px] font-bold text-slate-500 uppercase">Gold Class Ratio</label>
                                                         <div className="flex items-center gap-2">
                                                             <input type="range" min="0" max="1" step="0.1" value={node.classARatio || 0.5} onChange={(e) => {
                                                                 setNodes(nodes.map(n => n.id === node.id ? {...n, classARatio: parseFloat(e.target.value)} : n));
-                                                                resetSim();
-                                                            }} className="w-full" />
+                                                            }} className="w-full accent-amber-500" />
                                                             <span className="text-[10px] font-mono">{(node.classARatio || 0.5).toFixed(1)}</span>
                                                         </div>
                                                     </div>
@@ -452,12 +488,11 @@ const NetworkSimulator: React.FC = () => {
                                         <div className="pt-2 border-t">
                                             <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-2">Connections (Out)</h4>
                                             {links.filter(l => l.sourceId === node.id).map(l => (
-                                                <div key={l.id} className={`mb-3 p-2 bg-slate-50 rounded border border-slate-200 ${node.routingStrategy === RoutingStrategy.SHORTEST_QUEUE ? 'opacity-50 grayscale' : ''}`}>
+                                                <div key={l.id} className={`mb-3 p-2 bg-white rounded border border-slate-200 ${node.routingStrategy === RoutingStrategy.SHORTEST_QUEUE ? 'opacity-50 grayscale' : ''}`}>
                                                     <div className="flex justify-between items-center mb-1">
                                                         <span className="text-[10px] font-bold text-slate-600">To: {nodes.find(n => n.id === l.targetId)?.name}</span>
                                                         <button onClick={() => {
                                                             setLinks(links.filter(link => link.id !== l.id));
-                                                            resetSim();
                                                         }} className="text-red-400 hover:text-red-600"><i className="fa-solid fa-trash text-xs"></i></button>
                                                     </div>
                                                     {node.routingStrategy === RoutingStrategy.PROBABILISTIC && (
@@ -469,7 +504,6 @@ const NetworkSimulator: React.FC = () => {
                                                                     value={l.probA ?? l.probability} 
                                                                     onChange={(e) => {
                                                                         setLinks(links.map(link => link.id === l.id ? {...link, probA: parseFloat(e.target.value)} : link));
-                                                                        resetSim();
                                                                     }}
                                                                     className="w-full p-1 border rounded text-xs" 
                                                                 />
@@ -481,7 +515,6 @@ const NetworkSimulator: React.FC = () => {
                                                                     value={l.probB ?? l.probability} 
                                                                     onChange={(e) => {
                                                                         setLinks(links.map(link => link.id === l.id ? {...link, probB: parseFloat(e.target.value)} : link));
-                                                                        resetSim();
                                                                     }}
                                                                     className="w-full p-1 border rounded text-xs" 
                                                                 />
