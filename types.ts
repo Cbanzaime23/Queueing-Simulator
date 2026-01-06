@@ -1,4 +1,5 @@
 
+
 /**
  * Represents the current operational status of a Server (Teller).
  */
@@ -135,6 +136,9 @@ export interface Customer {
     // Retrial
     nextRetryTime?: number;
     isRetrial?: boolean;
+
+    // Network Global Tracking
+    systemArrivalTime?: number;
 }
 
 export interface DepartedCustomer extends Customer {
@@ -172,6 +176,14 @@ export interface SimulationEvent {
     type: SimulationEventType;
     entityId: string | number;
     time: number;
+}
+
+export interface NetworkRoutingEvent {
+    sourceId: string;
+    targetId: string;
+    timestamp: number;
+    classType: 'A' | 'B';
+    color: string;
 }
 
 export interface CustomerLogEntry {
@@ -320,6 +332,7 @@ export interface NetworkLink {
     probability: number;
     probA?: number; // Class A probability
     probB?: number; // Class B probability
+    condition?: 'ALL' | 'CLASS_A_ONLY' | 'CLASS_B_ONLY';
 }
 
 export interface SavedScenario {

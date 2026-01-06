@@ -1,8 +1,47 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { NetworkNode, NetworkLink, QueueModel, RoutingStrategy, ResourcePool } from '../types';
 import { NetworkEngine } from '../NetworkEngine';
 import { solveJacksonNetwork, calculateTheoreticalMetrics } from '../mathUtils';
+
+interface VisualParticle {
+    id: string;
+    startX: number;
+    startY: number;
+    endX: number;
+    endY: number;
+    color: string;
+    startTime: number;
+}
+
+interface ViewState {
+    x: number;
+    y: number;
+    scale: number;
+}
+
+const getHeatmapColor = (utilization: number) => {
+    // Clamp 0-1
+    const u = Math.max(0, Math.min(1, utilization));
+    
+    // Green (34, 197, 94) -> Yellow (234, 179, 8) -> Red (239, 68, 68)
+    let r, g, b;
+    if (u < 0.5) {
+        // Green to Yellow
+        const t = u * 2;
+        r = 34 + (234 - 34) * t;
+        g = 197 + (179 - 197) * t;
+        b = 94 + (8 - 94) * t;
+    } else {
+        // Yellow to Red
+        const t = (u - 0.5) * 2;
+        r = 234 + (239 - 234) * t;
+        g = 179 + (68 - 179) * t;
+        b = 8 + (68 - 8) * t;
+    }
+    return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+};
 
 const NetworkSimulator: React.FC = () => {
     // --- State ---
@@ -15,9 +54,23 @@ const NetworkSimulator: React.FC = () => {
     const [simState, setSimState] = useState<any>(null);
     const [isRunning, setIsRunning] = useState(false);
     
-    // Canvas State
-    const [isDragging, setIsDragging] = useState(false);
+    // Heatmap Toggle
+    const [isHeatmapMode, setIsHeatmapMode] = useState(false);
+    
+    // Visual Particle State
+    const [particles, setParticles] = useState<VisualParticle[]>([]);
+    
+    // File Input Ref for loading scenarios
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    
+    // Canvas View State (Pan & Zoom)
+    const [viewState, setViewState] = useState<ViewState>({ x: 0, y: 0, scale: 1 });
+    
+    // Canvas Interaction State
+    const [isDraggingNode, setIsDraggingNode] = useState(false);
+    const [isPanning, setIsPanning] = useState(false);
     const dragNodeRef = useRef<string | null>(null);
+    const lastMousePos = useRef<{x: number, y: number} | null>(null);
     const canvasRef = useRef<HTMLDivElement>(null);
 
     // Theoretical State
@@ -28,6 +81,9 @@ const NetworkSimulator: React.FC = () => {
         setIsRunning(false);
         setSimState(null);
         setSelectedNodeId(null);
+        setParticles([]);
+        // Reset View
+        setViewState({ x: 0, y: 0, scale: 1 });
 
         if (type === 'EMPTY') {
             setNodes([]);
@@ -39,13 +95,13 @@ const NetworkSimulator: React.FC = () => {
                 { id: 'r2', name: 'Scanners', totalCount: 1, availableCount: 1, color: 'bg-teal-500' }
             ]);
             setNodes([
-                { id: 'n1', name: 'Check-In', x: 100, y: 150, serverCount: 2, avgServiceTime: 5, capacity: 9999, isSource: true, externalLambda: 20, classARatio: 0.3, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
-                { id: 'n2', name: 'Security', x: 400, y: 150, serverCount: 3, avgServiceTime: 4, capacity: 10, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
-                { id: 'n3', name: 'Manual Check', x: 400, y: 350, serverCount: 1, avgServiceTime: 10, capacity: 5, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'n1', name: 'Check-In', x: 50, y: 100, serverCount: 2, avgServiceTime: 5, capacity: 9999, isSource: true, externalLambda: 20, classARatio: 0.3, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'n2', name: 'Security', x: 300, y: 100, serverCount: 3, avgServiceTime: 4, capacity: 10, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'n3', name: 'Manual Check', x: 300, y: 350, serverCount: 1, avgServiceTime: 10, capacity: 5, isSource: false, externalLambda: 0, classARatio: 0.5, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
             ]);
             setLinks([
-                { id: 'l1', sourceId: 'n1', targetId: 'n2', probability: 1.0, probA: 1.0, probB: 1.0 },
-                { id: 'l2', sourceId: 'n2', targetId: 'n3', probability: 0.2, probA: 0.05, probB: 0.3 }, 
+                { id: 'l1', sourceId: 'n1', targetId: 'n2', probability: 1.0, probA: 1.0, probB: 1.0, condition: 'ALL' },
+                { id: 'l2', sourceId: 'n2', targetId: 'n3', probability: 0.2, probA: 0.05, probB: 0.3, condition: 'ALL' }, 
             ]);
         } else if (type === 'HOSPITAL') {
             setResourcePools([
@@ -55,25 +111,84 @@ const NetworkSimulator: React.FC = () => {
             ]);
             setNodes([
                 // Registration
-                { id: 'h1', name: 'Registration', x: 50, y: 200, serverCount: 2, avgServiceTime: 3, capacity: 50, isSource: true, externalLambda: 15, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, classARatio: 0.1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'h1', name: 'Registration', x: 20, y: 150, serverCount: 2, avgServiceTime: 3, capacity: 50, isSource: true, externalLambda: 15, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, classARatio: 0.1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
                 // Triage (Requires Nurse)
-                { id: 'h2', name: 'Triage Nurse', x: 250, y: 200, serverCount: 3, avgServiceTime: 5, capacity: 20, isSource: false, externalLambda: 0, resourcePoolId: 'rp_nurse', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'h2', name: 'Triage Nurse', x: 250, y: 150, serverCount: 3, avgServiceTime: 5, capacity: 20, isSource: false, externalLambda: 0, resourcePoolId: 'rp_nurse', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
                 // GP (Requires Doctor)
-                { id: 'h3', name: 'Gen. Practice', x: 450, y: 100, serverCount: 4, avgServiceTime: 15, capacity: 20, isSource: false, externalLambda: 0, resourcePoolId: 'rp_doc', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'h3', name: 'Gen. Practice', x: 500, y: 50, serverCount: 4, avgServiceTime: 15, capacity: 20, isSource: false, externalLambda: 0, resourcePoolId: 'rp_doc', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
                 // Lab (Requires Tech)
-                { id: 'h4', name: 'X-Ray / Lab', x: 450, y: 350, serverCount: 2, avgServiceTime: 10, capacity: 10, isSource: false, externalLambda: 0, resourcePoolId: 'rp_tech', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
+                { id: 'h4', name: 'X-Ray / Lab', x: 500, y: 300, serverCount: 2, avgServiceTime: 10, capacity: 10, isSource: false, externalLambda: 0, resourcePoolId: 'rp_tech', routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } },
                 // Pharmacy
-                { id: 'h5', name: 'Pharmacy', x: 700, y: 200, serverCount: 1, avgServiceTime: 4, capacity: 15, isSource: false, externalLambda: 0, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } }
+                { id: 'h5', name: 'Pharmacy', x: 750, y: 150, serverCount: 1, avgServiceTime: 4, capacity: 15, isSource: false, externalLambda: 0, routingStrategy: RoutingStrategy.PROBABILISTIC, arrivalBatchSize: 1, serviceBatchSize: 1, queue: [], servers: [], stats: { totalWait: 0, servedCount: 0, currentWq: 0, utilization: 0, blockedCount: 0 } }
             ]);
             setLinks([
-                { id: 'l_h1_h2', sourceId: 'h1', targetId: 'h2', probability: 1.0, probA: 1.0, probB: 1.0 },
-                { id: 'l_h2_h3', sourceId: 'h2', targetId: 'h3', probability: 0.7, probA: 0.9, probB: 0.65 }, // Most go to GP
-                { id: 'l_h2_h4', sourceId: 'h2', targetId: 'h4', probability: 0.3, probA: 0.1, probB: 0.35 }, // Some go straight to lab
-                { id: 'l_h4_h3', sourceId: 'h4', targetId: 'h3', probability: 1.0, probA: 1.0, probB: 1.0 }, // Lab results go to GP
-                { id: 'l_h3_h5', sourceId: 'h3', targetId: 'h5', probability: 0.6, probA: 0.8, probB: 0.5 }, // 60% need meds
+                { id: 'l_h1_h2', sourceId: 'h1', targetId: 'h2', probability: 1.0, probA: 1.0, probB: 1.0, condition: 'ALL' },
+                { id: 'l_h2_h3', sourceId: 'h2', targetId: 'h3', probability: 0.7, probA: 0.9, probB: 0.65, condition: 'ALL' }, // Most go to GP
+                { id: 'l_h2_h4', sourceId: 'h2', targetId: 'h4', probability: 0.3, probA: 0.1, probB: 0.35, condition: 'ALL' }, // Some go straight to lab
+                { id: 'l_h4_h3', sourceId: 'h4', targetId: 'h3', probability: 1.0, probA: 1.0, probB: 1.0, condition: 'ALL' }, // Lab results go to GP
+                { id: 'l_h3_h5', sourceId: 'h3', targetId: 'h5', probability: 0.6, probA: 0.8, probB: 0.5, condition: 'ALL' }, // 60% need meds
                 // Remainder of h3 (40%) exits system
             ]);
         }
+    };
+
+    // --- Save / Load Handlers ---
+    const handleSaveNetwork = () => {
+        const data = {
+            nodes,
+            links,
+            resourcePools,
+            timestamp: Date.now()
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'network_config.json';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleLoadNetwork = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const content = event.target?.result as string;
+                const data = JSON.parse(content);
+
+                if (Array.isArray(data.nodes) && Array.isArray(data.links)) {
+                    // Stop any running sim
+                    setIsRunning(false);
+                    setEngine(null);
+                    setSimState(null);
+                    setSelectedNodeId(null);
+                    setParticles([]);
+                    
+                    // Reset engine explicitly to null first to ensure clean state
+                    setEngine(null);
+
+                    // Load Data
+                    setNodes(data.nodes);
+                    setLinks(data.links);
+                    setResourcePools(data.resourcePools || []);
+                    setViewState({ x: 0, y: 0, scale: 1 });
+                    
+                    // Reset input so same file works again
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                } else {
+                    alert("Invalid JSON format: Missing 'nodes' or 'links' arrays.");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Error parsing JSON file. Please check the file format.");
+            }
+        };
+        reader.readAsText(file);
     };
 
     // --- Effects ---
@@ -88,7 +203,44 @@ const NetworkSimulator: React.FC = () => {
         if (isRunning && engine) {
             const loop = () => {
                 engine.tick(0.1); // 0.1 min per tick
-                setSimState({ ...engine.getState() });
+                const newState = engine.getState();
+                setSimState({ ...newState });
+                
+                // --- Process Visualization Particles ---
+                const now = performance.now();
+                if (newState.routingEvents && newState.routingEvents.length > 0) {
+                    const newParticles: VisualParticle[] = [];
+                    
+                    newState.routingEvents.forEach((evt: any) => {
+                         const source = nodes.find(n => n.id === evt.sourceId);
+                         const target = nodes.find(n => n.id === evt.targetId);
+                         if (source && target) {
+                             newParticles.push({
+                                 id: Math.random().toString(36).substr(2, 9),
+                                 startX: source.x + 72, // Center offset
+                                 startY: source.y + 60,
+                                 endX: target.x + 72,
+                                 endY: target.y + 60,
+                                 // Class A = Amber, Class B = Grey
+                                 color: evt.classType === 'A' ? '#fbbf24' : '#94a3b8', 
+                                 startTime: now
+                             });
+                         }
+                    });
+
+                    setParticles(prev => {
+                        // Filter out old ones (> 500ms) and add new ones
+                        const active = prev.filter(p => now - p.startTime < 500);
+                        return [...active, ...newParticles];
+                    });
+                } else {
+                    // Cleanup old particles even if no new events
+                    setParticles(prev => {
+                        const active = prev.filter(p => now - p.startTime < 500);
+                        return active.length !== prev.length ? active : prev;
+                    });
+                }
+
                 frameId = requestAnimationFrame(loop);
             };
             frameId = requestAnimationFrame(loop);
@@ -99,7 +251,7 @@ const NetworkSimulator: React.FC = () => {
              setSimState(eng.getState());
         }
         return () => cancelAnimationFrame(frameId);
-    }, [isRunning, engine, nodes]); // Nodes dependency ensures re-init
+    }, [isRunning, engine, nodes, links, resourcePools]); // dependencies ensure fresh closure
 
     // Recalculate theoreticals when structure changes
     useEffect(() => {
@@ -114,32 +266,116 @@ const NetworkSimulator: React.FC = () => {
         }
     }, [nodes, links, resourcePools]);
 
-    // --- Handlers ---
-    const handleNodeDragStart = (e: React.MouseEvent, id: string) => {
-        e.stopPropagation();
-        setIsDragging(true);
-        dragNodeRef.current = id;
+
+    // --- Interaction Handlers (Canvas) ---
+
+    const handleCanvasMouseDown = (e: React.MouseEvent) => {
+        // Middle mouse or Space+Left usually pan, but here we treat background drag as pan
+        // unless a node was clicked (which stops propagation to here)
+        setIsPanning(true);
+        lastMousePos.current = { x: e.clientX, y: e.clientY };
     };
 
     const handleCanvasMouseMove = (e: React.MouseEvent) => {
-        if (!isDragging || !dragNodeRef.current || !canvasRef.current) return;
+        if (!canvasRef.current) return;
         
-        const rect = canvasRef.current.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        // PANNING
+        if (isPanning && lastMousePos.current) {
+            const dx = e.clientX - lastMousePos.current.x;
+            const dy = e.clientY - lastMousePos.current.y;
+            
+            setViewState(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+            lastMousePos.current = { x: e.clientX, y: e.clientY };
+            return;
+        }
 
-        setNodes(prev => prev.map(n => 
-            n.id === dragNodeRef.current ? { ...n, x: x - 50, y: y - 30 } : n
-        ));
+        // NODE DRAGGING
+        if (isDraggingNode && dragNodeRef.current && lastMousePos.current) {
+            const dx = e.clientX - lastMousePos.current.x;
+            const dy = e.clientY - lastMousePos.current.y;
+            
+            // Adjust delta by zoom scale so node follows mouse speed exactly
+            const worldDx = dx / viewState.scale;
+            const worldDy = dy / viewState.scale;
+
+            setNodes(prev => prev.map(n => 
+                n.id === dragNodeRef.current ? { ...n, x: n.x + worldDx, y: n.y + worldDy } : n
+            ));
+            
+            lastMousePos.current = { x: e.clientX, y: e.clientY };
+        }
     };
 
     const handleCanvasMouseUp = () => {
-        setIsDragging(false);
+        setIsDraggingNode(false);
+        setIsPanning(false);
         dragNodeRef.current = null;
+        lastMousePos.current = null;
+    };
+
+    const handleWheel = (e: React.WheelEvent) => {
+        e.preventDefault();
+        const scaleAmount = -e.deltaY * 0.001;
+        const newScale = Math.min(Math.max(0.2, viewState.scale + scaleAmount), 3);
+        setViewState(prev => ({ ...prev, scale: newScale }));
+    };
+
+    // --- Interaction Handlers (Nodes) ---
+
+    const handleNodeMouseDown = (e: React.MouseEvent, id: string) => {
+        e.stopPropagation();
+        setSelectedNodeId(id);
+        setIsDraggingNode(true);
+        dragNodeRef.current = id;
+        lastMousePos.current = { x: e.clientX, y: e.clientY };
+    };
+
+    // --- Interaction Handlers (Touch) ---
+
+    const handleCanvasTouchStart = (e: React.TouchEvent) => {
+        // 1 finger on background = Pan
+        if (e.touches.length === 1) {
+            setIsPanning(true);
+            const t = e.touches[0];
+            lastMousePos.current = { x: t.clientX, y: t.clientY };
+        }
+    };
+
+    const handleNodeTouchStart = (e: React.TouchEvent, id: string) => {
+        e.stopPropagation();
+        setSelectedNodeId(id);
+        setIsDraggingNode(true);
+        dragNodeRef.current = id;
+        const t = e.touches[0];
+        lastMousePos.current = { x: t.clientX, y: t.clientY };
+    };
+
+    const handleCanvasTouchMove = (e: React.TouchEvent) => {
+        // e.preventDefault(); // Handled by CSS touch-action: none
+        if (!lastMousePos.current) return;
+        const t = e.touches[0];
+
+        if (isPanning) {
+            const dx = t.clientX - lastMousePos.current.x;
+            const dy = t.clientY - lastMousePos.current.y;
+            setViewState(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+            lastMousePos.current = { x: t.clientX, y: t.clientY };
+        } else if (isDraggingNode && dragNodeRef.current) {
+            const dx = t.clientX - lastMousePos.current.x;
+            const dy = t.clientY - lastMousePos.current.y;
+            const worldDx = dx / viewState.scale;
+            const worldDy = dy / viewState.scale;
+            
+            setNodes(prev => prev.map(n => 
+                n.id === dragNodeRef.current ? { ...n, x: n.x + worldDx, y: n.y + worldDy } : n
+            ));
+            lastMousePos.current = { x: t.clientX, y: t.clientY };
+        }
     };
 
     const resetSim = () => {
         setIsRunning(false);
+        setParticles([]);
         const eng = new NetworkEngine(nodes, links, resourcePools);
         setEngine(eng);
         setSimState(eng.getState());
@@ -155,7 +391,8 @@ const NetworkSimulator: React.FC = () => {
             targetId,
             probability: 1.0,
             probA: 1.0,
-            probB: 1.0
+            probB: 1.0,
+            condition: 'ALL'
         };
         setLinks([...links, newLink]);
         resetSim();
@@ -172,6 +409,29 @@ const NetworkSimulator: React.FC = () => {
         const busyServers = liveNode.servers?.filter((s: any) => s.state === 'BUSY').length || 0;
         const blockedCount = liveNode.stats?.blockedCount || 0;
         
+        // Heatmap Logic
+        const utilization = liveNode.stats?.utilization || 0;
+        const isHighBlocking = blockedCount > 5;
+        
+        // Styles
+        const baseClasses = "absolute w-36 rounded-lg shadow-lg border-2 select-none group transition-colors z-10 touch-none";
+        let borderClass = selectedNodeId === node.id ? 'border-blue-600 ring-2 ring-blue-200' : 'border-slate-200';
+        
+        // Apply Heatmap Overrides
+        if (isHeatmapMode) {
+             if (isHighBlocking) {
+                 borderClass = 'border-red-600 animate-pulse ring-4 ring-red-400 ring-opacity-30';
+             } else {
+                 borderClass = selectedNodeId === node.id ? 'border-blue-600 ring-2 ring-blue-200' : 'border-slate-600';
+             }
+        }
+
+        const bgStyle = isHeatmapMode ? { backgroundColor: getHeatmapColor(utilization) } : {};
+        const bgClass = isHeatmapMode ? '' : 'bg-white';
+        const headerClass = isHeatmapMode ? 'bg-black/20' : (node.isSource ? 'bg-emerald-500' : 'bg-slate-500');
+        const textClass = isHeatmapMode ? 'text-white drop-shadow-md' : 'text-slate-700';
+        const subTextClass = isHeatmapMode ? 'text-white/90 drop-shadow-md' : 'text-slate-500';
+
         // Theoretical Metrics
         const lambdaEff = effLambdas.get(node.id) || 0;
         const mu = 60 / node.avgServiceTime;
@@ -183,35 +443,44 @@ const NetworkSimulator: React.FC = () => {
         return (
             <div 
                 key={node.id}
-                className={`absolute w-36 bg-white rounded-lg shadow-lg border-2 select-none group hover:border-blue-400 transition-colors z-10 ${selectedNodeId === node.id ? 'border-blue-600 ring-2 ring-blue-200' : 'border-slate-200'}`}
-                style={{ left: node.x, top: node.y }}
-                onMouseDown={(e) => { handleNodeDragStart(e, node.id); setSelectedNodeId(node.id); }}
+                className={`${baseClasses} ${borderClass} ${bgClass}`}
+                style={{ left: node.x, top: node.y, ...bgStyle }}
+                onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                onTouchStart={(e) => handleNodeTouchStart(e, node.id)}
             >
                 {/* Header */}
-                <div className={`px-3 py-2 rounded-t-md text-xs font-bold text-white flex justify-between items-center ${node.isSource ? 'bg-emerald-500' : 'bg-slate-500'}`}>
+                <div className={`px-3 py-2 rounded-t-md text-xs font-bold text-white flex justify-between items-center ${headerClass}`}>
                     <span>{node.name}</span>
                     {node.isSource && <i className="fa-solid fa-right-to-bracket"></i>}
                 </div>
 
                 {/* Body */}
                 <div className="p-3 space-y-2">
-                    {/* Visual Queue */}
-                    <div className="flex gap-1 h-3 items-end">
-                        {Array.from({ length: Math.min(8, qLength) }).map((_, i) => (
-                            <div key={i} className={`w-2 h-2 rounded-full ${liveNode.queue && liveNode.queue[i] ? liveNode.queue[i].color : 'bg-red-400'}`}></div>
-                        ))}
-                        {qLength > 8 && <span className="text-[9px] text-slate-400">+{qLength - 8}</span>}
+                    {/* Visual Queue (Hide dots in heatmap to reduce noise, or keep simple) */}
+                    {!isHeatmapMode && (
+                        <div className="flex gap-1 h-3 items-end">
+                            {Array.from({ length: Math.min(8, qLength) }).map((_, i) => (
+                                <div key={i} className={`w-2 h-2 rounded-full ${liveNode.queue && liveNode.queue[i] ? liveNode.queue[i].color : 'bg-red-400'}`}></div>
+                            ))}
+                            {qLength > 8 && <span className="text-[9px] text-slate-400">+{qLength - 8}</span>}
+                        </div>
+                    )}
+                    
+                    {/* Simplified Stats for Heatmap */}
+                    <div className={`grid grid-cols-2 gap-1 text-[9px] ${subTextClass}`}>
+                        <div>Srv: <span className={`font-bold ${textClass}`}>{busyServers}/{node.serverCount}</span></div>
+                        <div>Q: <span className={`font-bold ${qLength + busyServers >= node.capacity ? 'text-red-600' : textClass}`}>{qLength}</span></div>
                     </div>
-
-                    {/* Stats */}
-                    <div className="grid grid-cols-2 gap-1 text-[9px] text-slate-500">
-                        <div>Srv: <span className="font-bold text-slate-700">{busyServers}/{node.serverCount}</span></div>
-                        <div>Q: <span className={`font-bold ${qLength + busyServers >= node.capacity ? 'text-red-600' : 'text-slate-700'}`}>{qLength}</span></div>
-                    </div>
+                    
+                    {isHeatmapMode && (
+                         <div className="text-[9px] font-bold text-white drop-shadow-md">
+                             Util: {(utilization * 100).toFixed(0)}%
+                         </div>
+                    )}
 
                     {/* Blocked Stats (Only if non-zero) */}
                     {blockedCount > 0 && (
-                        <div className="text-[9px] font-bold text-red-500 flex items-center justify-between">
+                        <div className={`text-[9px] font-bold flex items-center justify-between ${isHeatmapMode ? 'text-white' : 'text-red-500'}`}>
                             <span>Blocked:</span>
                             <span>{blockedCount}</span>
                         </div>
@@ -284,6 +553,20 @@ const NetworkSimulator: React.FC = () => {
                                 markerEnd={isBlocked ? "url(#arrowhead-red)" : "url(#arrowhead)"} 
                                 className="transition-all duration-75"
                             />
+                            {/* Class Condition Badge */}
+                            {link.condition === 'CLASS_A_ONLY' && (
+                                <g transform={`translate(${(x1+x2)/2 - 15}, ${(y1+y2)/2 - 10})`}>
+                                    <circle r="6" fill="#fbbf24" stroke="#d97706" strokeWidth="1" />
+                                    <text x="0" y="3" textAnchor="middle" fontSize="8" fontWeight="bold" fill="#78350f">A</text>
+                                </g>
+                            )}
+                            {link.condition === 'CLASS_B_ONLY' && (
+                                <g transform={`translate(${(x1+x2)/2 - 15}, ${(y1+y2)/2 - 10})`}>
+                                    <circle r="6" fill="#94a3b8" stroke="#475569" strokeWidth="1" />
+                                    <text x="0" y="3" textAnchor="middle" fontSize="8" fontWeight="bold" fill="#ffffff">B</text>
+                                </g>
+                            )}
+                            
                             <text x={(x1+x2)/2} y={(y1+y2)/2 - 5} className={`text-[8px] font-bold bg-white/90 px-1 rounded border border-slate-100 ${isBlocked ? 'fill-red-500' : 'fill-slate-500'}`}>
                                 {probLabel}
                             </text>
@@ -298,11 +581,11 @@ const NetworkSimulator: React.FC = () => {
     const liveResourcePools = simState ? simState.resourcePools : resourcePools;
 
     return (
-        <div className="flex h-[calc(100vh-100px)] gap-4">
+        <div className="flex flex-col lg:flex-row min-h-screen lg:h-[calc(100vh-100px)] gap-4 pb-4 lg:pb-0">
             {/* Sidebar Controls */}
-            <div className="w-80 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden shrink-0">
+            <div className="w-full lg:w-80 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col shrink-0 lg:max-h-full">
                 <div className="p-4 border-b bg-slate-50 space-y-3">
-                    <h2 className="text-sm font-black uppercase text-slate-700 tracking-wider">Network Builder</h2>
+                    <h2 className="text-sm font-black uppercase text-slate-700 tracking-wider hidden lg:block">Network Builder</h2>
                     
                     {/* Scenario Selector */}
                     <div>
@@ -317,6 +600,17 @@ const NetworkSimulator: React.FC = () => {
                             <option value="EMPTY">⚪ Blank Canvas</option>
                         </select>
                     </div>
+                    
+                    {/* Heatmap Toggle */}
+                    <div className="flex items-center justify-between bg-slate-100 p-2 rounded border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-600 uppercase">Heatmap Mode</span>
+                        <button 
+                            onClick={() => setIsHeatmapMode(!isHeatmapMode)}
+                            className={`w-10 h-5 rounded-full relative transition-colors ${isHeatmapMode ? 'bg-orange-500' : 'bg-slate-300'}`}
+                        >
+                            <div className={`w-3 h-3 bg-white rounded-full absolute top-1 transition-all ${isHeatmapMode ? 'left-6' : 'left-1'}`}></div>
+                        </button>
+                    </div>
 
                     <div className="flex gap-2">
                         <button onClick={() => setIsRunning(!isRunning)} className={`flex-1 py-2 rounded text-xs font-bold text-white transition-colors ${isRunning ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-500 hover:bg-emerald-600'}`}>
@@ -326,9 +620,26 @@ const NetworkSimulator: React.FC = () => {
                             <i className="fa-solid fa-rotate-left"></i>
                         </button>
                     </div>
+
+                    {/* SAVE / LOAD JSON */}
+                     <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/60">
+                         <input 
+                            type="file" 
+                            ref={fileInputRef} 
+                            style={{ display: 'none' }} 
+                            accept=".json" 
+                            onChange={handleLoadNetwork} 
+                         />
+                         <button onClick={handleSaveNetwork} className="px-2 py-1.5 bg-white border border-slate-300 rounded text-[10px] font-bold text-slate-600 hover:bg-slate-50 flex items-center justify-center gap-1">
+                             <i className="fa-solid fa-download"></i> Save JSON
+                         </button>
+                         <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-white border border-slate-300 rounded text-[10px] font-bold text-slate-600 hover:bg-slate-50 flex items-center justify-center gap-1">
+                             <i className="fa-solid fa-upload"></i> Load JSON
+                         </button>
+                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-6">
+                <div className="flex-1 overflow-y-auto p-4 space-y-6 max-h-[40vh] lg:max-h-none">
                     {/* Global Stats */}
                     {simState && (
                         <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
@@ -340,6 +651,15 @@ const NetworkSimulator: React.FC = () => {
                             <div className="flex justify-between text-xs text-blue-700 mt-1">
                                 <span>Throughput:</span>
                                 <span className="font-mono">{simState.totalExits} cust</span>
+                            </div>
+                            {/* NEW STAT */}
+                            <div className="flex justify-between text-xs text-blue-700 mt-1 border-t border-blue-200 pt-1">
+                                <span>Avg System Time:</span>
+                                <span className="font-mono">
+                                    {simState.totalExits > 0 
+                                        ? (simState.totalGlobalSystemTime / simState.totalExits).toFixed(2) 
+                                        : '0.00'} min
+                                </span>
                             </div>
                         </div>
                     )}
@@ -488,13 +808,30 @@ const NetworkSimulator: React.FC = () => {
                                         <div className="pt-2 border-t">
                                             <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-2">Connections (Out)</h4>
                                             {links.filter(l => l.sourceId === node.id).map(l => (
-                                                <div key={l.id} className={`mb-3 p-2 bg-white rounded border border-slate-200 ${node.routingStrategy === RoutingStrategy.SHORTEST_QUEUE ? 'opacity-50 grayscale' : ''}`}>
+                                                <div key={l.id} className={`mb-3 p-2 bg-white rounded border border-slate-200 ${node.routingStrategy === RoutingStrategy.SHORTEST_QUEUE ? 'opacity-80' : ''}`}>
                                                     <div className="flex justify-between items-center mb-1">
                                                         <span className="text-[10px] font-bold text-slate-600">To: {nodes.find(n => n.id === l.targetId)?.name}</span>
                                                         <button onClick={() => {
                                                             setLinks(links.filter(link => link.id !== l.id));
                                                         }} className="text-red-400 hover:text-red-600"><i className="fa-solid fa-trash text-xs"></i></button>
                                                     </div>
+                                                    
+                                                    {/* Condition Selector */}
+                                                    <div className="mb-2">
+                                                        <label className="text-[8px] uppercase font-bold text-slate-400 block mb-1">Routing Condition</label>
+                                                        <select 
+                                                            value={l.condition || 'ALL'} 
+                                                            onChange={(e) => {
+                                                                setLinks(links.map(link => link.id === l.id ? {...link, condition: e.target.value as any} : link));
+                                                            }}
+                                                            className="w-full p-1 border rounded text-[9px] bg-slate-50"
+                                                        >
+                                                            <option value="ALL">All Classes (Standard)</option>
+                                                            <option value="CLASS_A_ONLY">Class A Only (VIP)</option>
+                                                            <option value="CLASS_B_ONLY">Class B Only (Standard)</option>
+                                                        </select>
+                                                    </div>
+
                                                     {node.routingStrategy === RoutingStrategy.PROBABILISTIC && (
                                                         <div className="flex gap-2">
                                                             <div className="flex-1">
@@ -549,20 +886,105 @@ const NetworkSimulator: React.FC = () => {
                 </div>
             </div>
 
-            {/* Canvas */}
+            {/* Canvas Container */}
             <div 
                 ref={canvasRef}
-                className="flex-1 bg-slate-50 rounded-xl border border-slate-200 relative overflow-hidden cursor-move"
+                className="flex-1 bg-slate-50 rounded-xl border border-slate-200 relative overflow-hidden min-h-[400px]"
+                onMouseDown={handleCanvasMouseDown}
                 onMouseMove={handleCanvasMouseMove}
                 onMouseUp={handleCanvasMouseUp}
                 onMouseLeave={handleCanvasMouseUp}
+                onTouchStart={handleCanvasTouchStart}
+                onTouchMove={handleCanvasTouchMove}
+                onTouchEnd={handleCanvasMouseUp}
+                onWheel={handleWheel}
+                style={{ touchAction: 'none', cursor: isPanning ? 'grabbing' : 'grab' }}
             >
-                <div className="absolute top-4 left-4 z-10 bg-white/80 p-2 rounded text-[10px] text-slate-400 font-mono pointer-events-none">
-                    Multi-Stage Canvas • Drag to Move Nodes
+                {/* Background Dot Grid */}
+                <div 
+                    className="absolute inset-0 pointer-events-none opacity-20"
+                    style={{
+                        backgroundImage: 'radial-gradient(circle, #94a3b8 1px, transparent 1px)',
+                        backgroundSize: `${20 * viewState.scale}px ${20 * viewState.scale}px`,
+                        backgroundPosition: `${viewState.x}px ${viewState.y}px`
+                    }}
+                ></div>
+
+                {/* Info Text (Fixed) */}
+                <div className="absolute top-4 left-4 z-30 bg-white/80 p-2 rounded text-[10px] text-slate-400 font-mono pointer-events-none shadow-sm backdrop-blur">
+                    Pan: Drag Background • Zoom: Wheel / Pinch
+                </div>
+
+                {/* View Controls (Zoom) */}
+                <div className="absolute top-4 right-4 z-40 flex flex-col gap-2">
+                    <button 
+                        onClick={() => setViewState(p => ({...p, scale: Math.min(p.scale + 0.2, 3)}))}
+                        className="w-8 h-8 bg-white rounded shadow text-slate-600 hover:bg-slate-50 flex items-center justify-center font-bold"
+                    >
+                        +
+                    </button>
+                    <button 
+                        onClick={() => setViewState(p => ({...p, scale: Math.max(p.scale - 0.2, 0.2)}))}
+                        className="w-8 h-8 bg-white rounded shadow text-slate-600 hover:bg-slate-50 flex items-center justify-center font-bold"
+                    >
+                        -
+                    </button>
+                    <button 
+                        onClick={() => setViewState({x:0, y:0, scale: 1})}
+                        className="w-8 h-8 bg-white rounded shadow text-slate-400 hover:text-slate-600 hover:bg-slate-50 flex items-center justify-center"
+                        title="Reset View"
+                    >
+                        <i className="fa-solid fa-expand text-xs"></i>
+                    </button>
                 </div>
                 
-                {renderLinks()}
-                {nodes.map(renderNode)}
+                {/* Transformed World Container */}
+                <div 
+                    style={{ 
+                        transform: `translate(${viewState.x}px, ${viewState.y}px) scale(${viewState.scale})`,
+                        transformOrigin: '0 0',
+                        width: '100%',
+                        height: '100%'
+                    }}
+                >
+                    {renderLinks()}
+                    
+                    {/* Visual Particles Layer */}
+                    <div className="absolute inset-0 pointer-events-none overflow-visible z-20">
+                        {particles.map(p => (
+                            <div 
+                                key={p.id}
+                                className="absolute w-3 h-3 rounded-full border border-white shadow-sm particle-anim"
+                                style={{
+                                    backgroundColor: p.color,
+                                    // CSS Variables for the animation
+                                    '--start-x': `${p.startX}px`,
+                                    '--start-y': `${p.startY}px`,
+                                    '--end-x': `${p.endX}px`,
+                                    '--end-y': `${p.endY}px`,
+                                } as React.CSSProperties}
+                            ></div>
+                        ))}
+                    </div>
+
+                    {nodes.map(renderNode)}
+                </div>
+
+                {/* Heatmap Legend (Fixed) */}
+                {isHeatmapMode && (
+                    <div className="absolute bottom-4 left-4 bg-white/90 p-3 rounded-lg border border-slate-200 shadow-sm z-30 backdrop-blur">
+                        <h4 className="text-[10px] font-bold uppercase text-slate-500 mb-2">Heatmap (Utilization)</h4>
+                        <div className="flex items-center gap-2 text-[10px] font-mono">
+                            <span>0%</span>
+                            <div className="w-24 h-2 rounded-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500"></div>
+                            <span>100%</span>
+                        </div>
+                        <div className="mt-2 text-[9px] text-slate-400 flex items-center gap-1">
+                            <div className="w-2 h-2 border border-red-500 rounded animate-pulse"></div>
+                            <span>Pulse = High Blocking</span>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );

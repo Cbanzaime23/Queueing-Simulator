@@ -1,3 +1,4 @@
+
 # Product Requirements Document (PRD)
 ## M/M/s Queue Simulator Pro v3.6
 
@@ -47,10 +48,10 @@ The user must be able to configure the following parameters:
 #### 4.1.1. Structural Parameters
 *   **Environment Presets:** Bank (Standard), Market (Dedicated Queues), Call Center (High Volume/Impatience).
 *   **Queue Model:**
-    *   `M/M/1`: Single Server.
-    *   `M/M/s`: Multi-server.
-    *   `M/M/∞`: Infinite server (Self-service).
-    *   `M/M/s/K`: Finite system capacity (Loss system).
+    *   **M/M/1**: Single Server.
+    *   **M/M/s**: Multi-server.
+    *   **M/M/$\infty$**: Infinite server (Self-service).
+    *   **M/M/s/K**: Finite system capacity (Loss system).
 *   **Resources:** Number of Servers ($s$), System Capacity ($K$).
 
 #### 4.1.2. Stochastic Processes
@@ -112,7 +113,7 @@ The user must be able to configure the following parameters:
 
 The system validates simulation results against standard queueing theory formulas where applicable:
 
-1.  **Traffic Intensity:** $\rho = \lambda / (s \cdot \mu)$.
+1.  **Traffic Intensity:** $\rho = \frac{\lambda}{s \mu}$.
 2.  **Little's Law:** $L = \lambda W$.
 3.  **Exact Models:**
     *   Erlang-C for $M/M/s$.
@@ -120,7 +121,7 @@ The system validates simulation results against standard queueing theory formula
     *   Pollaczek-Khinchine for $M/G/1$.
 4.  **Approximations:**
     *   **Sakasegawa's Formula:** Used for $G/G/s$ systems to account for Coefficient of Variation ($C_a, C_s$).
-    *   $L_q \approx \frac{\rho^{\sqrt{2(s+1)}}}{1-\rho} \cdot \frac{C_a^2 + C_s^2}{2}$.
+    *   $$ L_q \approx \frac{\rho^{\sqrt{2(s+1)}}}{1-\rho} \cdot \frac{C_a^2 + C_s^2}{2} $$
 5.  **Staffing Calculator:** Inverse Erlang-C to determine required staff for a given Service Level Target (e.g., 80% calls answered in 20s).
 
 ---

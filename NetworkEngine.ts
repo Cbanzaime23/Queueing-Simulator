@@ -1,5 +1,6 @@
 
-import { NetworkNode, NetworkLink, Customer, Server, ServerState, DistributionType, SkillType, RoutingStrategy, ResourcePool } from './types';
+
+import { NetworkNode, NetworkLink, Customer, Server, ServerState, DistributionType, SkillType, RoutingStrategy, ResourcePool, NetworkRoutingEvent } from './types';
 import { nextDistribution } from './mathUtils';
 
 const CLASS_A_COLOR = 'bg-amber-400 border-2 border-amber-600'; // Gold/VIP
@@ -12,7 +13,9 @@ export class NetworkEngine {
     private currentTime: number;
     private nextArrivalTimes: Map<string, number>; // nodeID -> next arrival time
     private totalExits: number;
+    private totalGlobalSystemTime: number; // Accumulated total time in system for all finished customers
     private recentBlockedLinks: string[];
+    private routingEvents: NetworkRoutingEvent[];
 
     constructor(nodes: NetworkNode[], links: NetworkLink[], resourcePools: ResourcePool[] = []) {
         this.nodes = JSON.parse(JSON.stringify(nodes)); // Deep copy to start fresh
@@ -21,7 +24,9 @@ export class NetworkEngine {
         this.currentTime = 0;
         this.nextArrivalTimes = new Map();
         this.totalExits = 0;
+        this.totalGlobalSystemTime = 0;
         this.recentBlockedLinks = [];
+        this.routingEvents = [];
         
         // Initialize servers for each node and schedule first arrivals for sources
         this.nodes.forEach(node => {
@@ -65,6 +70,7 @@ export class NetworkEngine {
         this.links.forEach(link => {
             if (link.probA === undefined) link.probA = link.probability;
             if (link.probB === undefined) link.probB = link.probability;
+            if (link.condition === undefined) link.condition = 'ALL';
         });
     }
 
@@ -78,8 +84,9 @@ export class NetworkEngine {
     public tick(dt: number) {
         const newTime = this.currentTime + dt;
         this.recentBlockedLinks = []; // Reset for this tick
+        this.routingEvents = []; // Reset events for this tick
         
-        // 1. Handle External Arrivals (With Batch Support)
+        // 1. Handle Handle External Arrivals (With Batch Support)
         this.nodes.forEach(node => {
             if (node.isSource) {
                 while (this.nextArrivalTimes.get(node.id)! <= newTime) {
@@ -258,6 +265,8 @@ export class NetworkEngine {
                 requiredSkill: SkillType.GENERAL,
                 classType: isClassA ? 'A' : 'B'
             };
+            // Set System Entry Timestamp for new customers
+            customer.systemArrivalTime = arrivalTime;
         }
         
         // Reset timing for this specific node leg
@@ -270,10 +279,23 @@ export class NetworkEngine {
 
     private routeCustomer(customer: Customer, currentNode: NetworkNode) {
         // Find links originating from this node
-        const links = this.links.filter(l => l.sourceId === currentNode.id);
+        const allLinks = this.links.filter(l => l.sourceId === currentNode.id);
         
-        if (links.length === 0) {
+        // Filter links based on Condition (CLASS_A_ONLY / CLASS_B_ONLY)
+        const validLinks = allLinks.filter(l => {
+            if (l.condition === 'CLASS_A_ONLY' && customer.classType !== 'A') return false;
+            if (l.condition === 'CLASS_B_ONLY' && customer.classType !== 'B') return false;
+            return true;
+        });
+        
+        if (validLinks.length === 0) {
             this.totalExits++;
+            // Calculate Global System Time (Exit Time - Entry Time)
+            if (customer.systemArrivalTime !== undefined) {
+                // Use the scheduled finish time as exit time, fallback to currentTime if needed
+                const exitTime = customer.finishTime || this.currentTime;
+                this.totalGlobalSystemTime += (exitTime - customer.systemArrivalTime);
+            }
             return; // Exit system
         }
 
@@ -281,8 +303,8 @@ export class NetworkEngine {
         if (currentNode.routingStrategy === RoutingStrategy.SHORTEST_QUEUE) {
             let candidateLinks: { link: NetworkLink, node: NetworkNode, load: number }[] = [];
             
-            // Identify connected nodes
-            for (const link of links) {
+            // Identify connected nodes using filtered list
+            for (const link of validLinks) {
                 const targetNode = this.nodes.find(n => n.id === link.targetId);
                 if (targetNode) {
                     // Load = Queue + Active Customers (approximation)
@@ -300,10 +322,19 @@ export class NetworkEngine {
                 const bestCandidate = candidateLinks[0];
                 
                 // Check Capacity of best candidate
-                // Note: Blocking checks just queue + busy servers count roughly
                 const busyCount = bestCandidate.node.servers.reduce((acc, s) => acc + (s.state === ServerState.BUSY ? (s._activeBatch?.length || 1) : 0), 0);
                 if (bestCandidate.node.queue.length + busyCount < bestCandidate.node.capacity) {
+                    // ROUTING SUCCESS - JSQ
                     this.handleArrival(bestCandidate.node, customer.finishTime!, customer);
+                    
+                    // Track Event for Visuals
+                    this.routingEvents.push({
+                        sourceId: currentNode.id,
+                        targetId: bestCandidate.node.id,
+                        timestamp: this.currentTime,
+                        classType: customer.classType,
+                        color: customer.color
+                    });
                 } else {
                     // Even the best node is full -> Blocked
                     currentNode.stats.blockedCount++;
@@ -321,7 +352,7 @@ export class NetworkEngine {
         let cumulative = 0;
         let routed = false;
 
-        for (const link of links) {
+        for (const link of validLinks) {
             // Select probability based on Class
             const prob = customer.classType === 'A' ? (link.probA ?? link.probability) : (link.probB ?? link.probability);
             
@@ -338,6 +369,16 @@ export class NetworkEngine {
                         // Arrival time at next node is finish time at current
                         this.handleArrival(targetNode, customer.finishTime!, customer);
                         routed = true;
+
+                        // Track Event for Visuals
+                        this.routingEvents.push({
+                            sourceId: currentNode.id,
+                            targetId: targetNode.id,
+                            timestamp: this.currentTime,
+                            classType: customer.classType,
+                            color: customer.color
+                        });
+
                     } else {
                         // BLOCKED
                         // Increment blocked stat on SOURCE node
@@ -354,6 +395,11 @@ export class NetworkEngine {
 
         if (!routed) {
             this.totalExits++;
+            // Calculate Global System Time (Exit Time - Entry Time)
+            if (customer.systemArrivalTime !== undefined) {
+                const exitTime = customer.finishTime || this.currentTime;
+                this.totalGlobalSystemTime += (exitTime - customer.systemArrivalTime);
+            }
         }
     }
 
@@ -364,7 +410,9 @@ export class NetworkEngine {
             links: this.links,
             resourcePools: this.resourcePools,
             totalExits: this.totalExits,
-            recentBlockedLinks: this.recentBlockedLinks
+            totalGlobalSystemTime: this.totalGlobalSystemTime,
+            recentBlockedLinks: this.recentBlockedLinks,
+            routingEvents: this.routingEvents
         };
     }
 }

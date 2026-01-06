@@ -14,7 +14,7 @@ A rigorous, interactive, and visually rich web application for simulating and an
 Support for standard Kendall's Notation models with configurable parameters:
 *   **M/M/1**: Single server, exponential inter-arrival and service times.
 *   **M/M/s**: Multiple servers with infinite queue capacity.
-*   **M/M/∞**: Infinite server model (self-service).
+*   **M/M/$\infty$**: Infinite server model (self-service).
 *   **M/M/s/K**: Finite system capacity (blocking/loss system).
 *   **M/M/s//N**: Finite calling population (Machine Repair model).
 
@@ -23,7 +23,7 @@ Go beyond simple Markovian models. Configure Arrival and Service processes indep
 *   **Poisson (Exponential)**: The standard memoryless assumption.
 *   **Deterministic**: Fixed, constant time intervals (zero variance).
 *   **Uniform**: Bounded variance within a specified range.
-*   **Erlang-k**: Tunable shape parameter ($k$) to model multi-stage processes (reduces variance compared to Exponential).
+*   **Erlang-$k$**: Tunable shape parameter ($k$) to model multi-stage processes (reduces variance compared to Exponential).
 
 ### 3. Dual-Engine Validation
 The app runs two parallel engines to validate results:
