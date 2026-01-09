@@ -139,6 +139,9 @@ export interface Customer {
 
     // Network Global Tracking
     systemArrivalTime?: number;
+
+    // Workload
+    workloadItems?: number;
 }
 
 export interface DepartedCustomer extends Customer {
@@ -197,6 +200,7 @@ export interface CustomerLogEntry {
     type: string;
     requiredSkill: SkillType;
     estimatedWaitTime: number;
+    workloadItems?: number;
 }
 
 export interface ChartDataPoint {
@@ -217,6 +221,7 @@ export interface ChartDataPoint {
     lambdaW: number;
     currentLambda: number;
     currentServers: number;
+    utilization: number; // Observed Utilization % (0-100)
     visualSnapshot?: any;
 }
 
@@ -287,6 +292,69 @@ export interface SimulationConfig {
     skillRatios: { [key in SkillType]?: number };
     retrialMode: boolean;
     avgRetrialDelay: number;
+    
+    // Variable Workload
+    variableWorkloadMode: boolean;
+    minWorkloadItems: number;
+    maxWorkloadItems: number;
+}
+
+/**
+ * Consolidated Configuration for UI State
+ */
+export interface SimulationUIConfig {
+    environment: Environment;
+    selectedModel: QueueModel;
+    arrivalType: DistributionType;
+    erlangK: number;
+    lambdaInput: number;
+    vipProbability: number;
+    traceData: TraceEntry[];
+    useDynamicMode: boolean;
+    arrivalSchedule: number[];
+    serverSchedule: number[];
+    impatientMode: boolean;
+    balkThreshold: number;
+    avgPatienceTime: number;
+    efficiencyMode: 'UNIFORM' | 'MIXED';
+    seniorityRatio: number;
+    serverSelectionStrategy: ServerSelectionStrategy;
+    skillBasedRouting: boolean;
+    skillRatios: { [key in SkillType]?: number };
+    retrialMode: boolean;
+    avgRetrialDelay: number;
+    stateDependentMode: boolean;
+    panicThreshold: number;
+    panicEfficiencyMultiplier: number;
+    variableWorkloadMode: boolean;
+    minWorkloadItems: number;
+    maxWorkloadItems: number;
+    breakdownMode: boolean;
+    mtbf: number;
+    mttr: number;
+    queueTopology: QueueTopology;
+    jockeyingEnabled: boolean;
+    bulkArrivalMode: boolean;
+    minGroupSize: number;
+    maxGroupSize: number;
+    batchServiceMode: boolean;
+    maxBatchSize: number;
+    serviceType: DistributionType;
+    erlangServiceK: number;
+    serviceTimeInput: number;
+    slTargetSec: number;
+    slTargetPercent: number;
+    serverCountInput: number;
+    capacityK: number;
+    populationSize: number;
+    openHour: number;
+    closeHour: number;
+    costPerServer: number;
+    costPerWait: number;
+    // Analysis params
+    sensParam: 'serverCount' | 'lambda' | 'avgServiceTime';
+    sensMetric: 'totalCost' | 'wq' | 'rho';
+    sensRange: [number, number];
 }
 
 export interface ResourcePool {
@@ -341,4 +409,24 @@ export interface SavedScenario {
     history: ChartDataPoint[];
     color: string;
     visible: boolean;
+}
+
+export interface SensitivityResult {
+  xValue: number;
+  wq: number;
+  lq: number;
+  rho: number;
+  totalCost: number;
+  isStable: boolean;
+}
+
+export interface FloatingEffect {
+    id: string;
+    x: number; // Percent
+    y: number; // Percent
+    icon: string;
+    label: string;
+    color: string;
+    timestamp: number;
+    serverId?: number; // If attached to a specific server
 }

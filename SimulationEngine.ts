@@ -610,12 +610,26 @@ export class SimulationEngine {
     }
 
     private createFactoryCustomer(arrivalTime: number, existingId?: string): Customer {
+        // VARIABLE WORKLOAD LOGIC (Multi-Item)
+        let workloadItems = 1;
+        if (this.config.variableWorkloadMode) {
+            // Random integer between min and max (inclusive)
+            const min = this.config.minWorkloadItems || 1;
+            const max = this.config.maxWorkloadItems || 5;
+            workloadItems = Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+
         // SERVICE TIME LOGIC
-        let customerServiceTime: number;
+        // If Trace, we use trace. If Variable Workload, we sum multiple samples.
+        let customerServiceTime = 0;
+        
         if (this.config.serviceType === DistributionType.TRACE && this.config.traceData && this.config.traceData[this.traceIndex]) {
             customerServiceTime = this.config.traceData[this.traceIndex].serviceTime;
         } else {
-            customerServiceTime = nextDistribution(this.config.serviceType, this.config.avgServiceTime, this.config.serviceK);
+            // Generate 'workloadItems' independent service samples
+            for (let i = 0; i < workloadItems; i++) {
+                customerServiceTime += nextDistribution(this.config.serviceType, this.config.avgServiceTime, this.config.serviceK);
+            }
         }
 
         const isVip = Math.random() < this.config.vipProbability;
@@ -659,7 +673,8 @@ export class SimulationEngine {
             color,
             patienceTime,
             requiredSkill,
-            classType
+            classType,
+            workloadItems
         };
     }
 
@@ -1126,7 +1141,8 @@ export class SimulationEngine {
                             serverId: server.id,
                             type: customer.priority === 1 ? 'VIP' : (customer.patienceTime ? 'Impatient' : 'Standard'),
                             requiredSkill: customer.requiredSkill,
-                            estimatedWaitTime: customer.estimatedWaitTime || 0
+                            estimatedWaitTime: customer.estimatedWaitTime || 0,
+                            workloadItems: customer.workloadItems
                         };
                         this.state.completedCustomers.push(logEntry);
                     });
@@ -1164,7 +1180,44 @@ export class SimulationEngine {
     private recordHistorySnapshot() {
         const currentLambda = this.getDynamicLambda(this.state.currentTime);
         const currentServers = this.getDynamicServerCount(this.state.currentTime);
-        const mu = 60 / this.config.avgServiceTime;
+        // Standard Mu
+        let mu = 60 / this.config.avgServiceTime;
+        let customCs2: number | undefined = undefined;
+
+        // -- VARIABLE WORKLOAD THEORETICAL ADJUSTMENT --
+        // If variable workload is ON, the service time distribution is Compound.
+        // T = S1 + S2 + ... + Sn where n ~ U[min, max]
+        // We calculate the effective Mean Service Rate and CV^2 to pass to the theoretical engine.
+        if (this.config.variableWorkloadMode) {
+            const minN = this.config.minWorkloadItems || 1;
+            const maxN = this.config.maxWorkloadItems || 1;
+            
+            // Moments of N (Discrete Uniform)
+            const meanN = (minN + maxN) / 2;
+            const varN = (Math.pow(maxN - minN + 1, 2) - 1) / 12;
+
+            // Moments of S (Service Time per Item)
+            const meanS = this.config.avgServiceTime; // minutes
+            let varS = 0;
+            // Approximation for varS based on distribution type
+            // Var = (Mean * CV)^2
+            // Poisson: CV=1 -> Var = Mean^2
+            // Deterministic: Var = 0
+            // Erlang-k: Var = Mean^2 / k
+            if (this.config.serviceType === DistributionType.DETERMINISTIC) varS = 0;
+            else if (this.config.serviceType === DistributionType.ERLANG) varS = (meanS * meanS) / this.config.serviceK;
+            else varS = meanS * meanS; // Default Poisson
+
+            // Moments of T (Total Service Time)
+            const meanT = meanN * meanS;
+            const varT = meanN * varS + (meanS * meanS) * varN;
+
+            // Effective Mu (per hour)
+            mu = 60 / meanT;
+
+            // Effective Cs2 = Var(T) / Mean(T)^2
+            customCs2 = varT / (meanT * meanT);
+        }
 
         let avgEfficiency = 1.0;
         if (this.config.efficiencyMode === 'MIXED') {
@@ -1185,7 +1238,8 @@ export class SimulationEngine {
             avgEfficiency,
             this.config.breakdownMode,
             this.config.mtbf,
-            this.config.mttr
+            this.config.mttr,
+            customCs2 // Pass the calculated CV for compound distribution
         );
 
         const avgWq = this.state.statsWq.count > 0 ? this.state.statsWq.sum / this.state.statsWq.count : 0;
@@ -1208,6 +1262,23 @@ export class SimulationEngine {
         const lObs = this.state.integralL / (this.state.currentTime || 1); 
         const lambdaEffObs = (this.state.customersArrivals / (this.state.currentTime || 1)) * 60;
         const lambdaW = (lambdaEffObs / 60) * avgW;
+
+        // Calculate Utilization
+        let totalUtil = 0;
+        let activeServerCount = 0;
+        this.state.servers.forEach(s => {
+            if (!s.shouldRemove) {
+                if (s.utilizationHistory.length > 0) {
+                    const sum = s.utilizationHistory.reduce((a, b) => a + b, 0);
+                    totalUtil += (sum / s.utilizationHistory.length);
+                } else {
+                    const uptime = this.state.currentTime - s.startTime;
+                    if (uptime > 0) totalUtil += (s.totalBusyTime / uptime);
+                }
+                activeServerCount++;
+            }
+        });
+        const utilization = activeServerCount > 0 ? parseFloat(((totalUtil / activeServerCount) * 100).toFixed(1)) : 0;
 
         // Capture Lightweight Visual Snapshot for Scrubbing
         // Note: JSON.parse/stringify is a simple way to deep clone standard objects.
@@ -1237,6 +1308,7 @@ export class SimulationEngine {
             lambdaW: parseFloat(lambdaW.toFixed(2)),
             currentLambda,
             currentServers,
+            utilization,
             visualSnapshot // Store the visual state
         };
 

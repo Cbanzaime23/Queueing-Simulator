@@ -1,5 +1,6 @@
 
-import { TheoreticalMetrics, QueueModel, DistributionType, CostOptimizationData, NetworkNode, NetworkLink, SimulationConfig } from './types';
+
+import { TheoreticalMetrics, QueueModel, DistributionType, CostOptimizationData, NetworkNode, NetworkLink, SimulationConfig, SensitivityResult } from './types';
 
 /**
  * Helper: Computes factorial of a number (n!).
@@ -165,6 +166,7 @@ const combinations = (n: number, k: number): number => {
  * @param breakdownMode Optional boolean to enable breakdown logic
  * @param mtbf Mean Time Between Failures (mins)
  * @param mttr Mean Time To Repair (mins)
+ * @param customCs2 Optional Override for Service Squared Coefficient of Variation (used for complex compound distributions)
  */
 export const calculateTheoreticalMetrics = (
   lambda: number,
@@ -180,7 +182,8 @@ export const calculateTheoreticalMetrics = (
   avgEfficiency: number = 1.0,
   breakdownMode: boolean = false,
   mtbf: number = 60,
-  mttr: number = 5
+  mttr: number = 5,
+  customCs2?: number
 ): TheoreticalMetrics => {
   
   if (arrivalType === DistributionType.TRACE || serviceType === DistributionType.TRACE) {
@@ -213,13 +216,19 @@ export const calculateTheoreticalMetrics = (
   if (arrivalType === DistributionType.UNIFORM) ca2 = 1/3;
   if (arrivalType === DistributionType.ERLANG) ca2 = 1 / erlangK;
 
+  // Service CV (Use override if provided, else standard)
   let cs2 = 1;
-  if (serviceType === DistributionType.DETERMINISTIC) cs2 = 0;
-  if (serviceType === DistributionType.UNIFORM) cs2 = 1/3;
-  if (serviceType === DistributionType.ERLANG) cs2 = 1 / erlangServiceK;
+  if (customCs2 !== undefined) {
+      cs2 = customCs2;
+  } else {
+      if (serviceType === DistributionType.DETERMINISTIC) cs2 = 0;
+      if (serviceType === DistributionType.UNIFORM) cs2 = 1/3;
+      if (serviceType === DistributionType.ERLANG) cs2 = 1 / erlangServiceK;
+  }
   
   const isPoissonArrival = arrivalType === DistributionType.POISSON;
-  const isPoissonService = serviceType === DistributionType.POISSON;
+  // If customCs2 is provided, we must treat it as General service, not Poisson (unless cs2=1 roughly)
+  const isPoissonService = customCs2 === undefined ? serviceType === DistributionType.POISSON : Math.abs(customCs2 - 1) < 0.01;
   const isGGS = !isPoissonArrival || !isPoissonService;
 
   // --- Case 1: Infinite Server (M/M/inf, M/G/inf, G/G/inf) ---
@@ -251,24 +260,6 @@ export const calculateTheoreticalMetrics = (
       // N = populationSize
       const N = populationSize;
       const ratio = lambda / effectiveMu; // lambda here is PER CUSTOMER arrival rate
-
-      // Calculate P0
-      let sum = 0;
-      for (let n=0; n <= N; n++) {
-          let term = combinations(N, n) * Math.pow(ratio, n);
-          // Adjustment for n > s (service limits)
-          if (n <= actualS) {
-              // Standard term
-          } else {
-              // Multiply by factor for n > s: n! / (s! * s^(n-s))
-              // But standard formula often written as:
-              // Pn = P0 * binom(N,n) * rho^n (for n<=s)
-              // Pn = P0 * binom(N,n) * (n! / s!s^(n-s)) * rho^n (for n>s)
-              // Wait, simplified:
-              // term = term * (factorial(n) / (factorial(actualS) * Math.pow(actualS, n - actualS)));
-              // Actually, simpler recursive form is safer.
-          }
-      }
 
       // Re-implement Pn Calculation accurately
       let p = new Array(N + 1).fill(0);
@@ -396,6 +387,7 @@ export const calculateTheoreticalMetrics = (
   if (isMG1) approxNote = "Exact (Pollaczek-Khinchine Formula)";
   else if (isReallyApprox) approxNote = "G/G/s Allen-Cunneen Approximation";
   else if (breakdownMode) approxNote = "Adjusted for Availability (Effective Service Rate)";
+  else if (customCs2) approxNote = "Variable Workload: Compound Distribution Model";
 
   // --- HEAVY TRAFFIC APPROXIMATION ---
   let heavyTrafficLq = 0;
@@ -412,7 +404,7 @@ export const calculateTheoreticalMetrics = (
 
   return { 
     rho, p0, lq, l, wq, w, isStable,
-    isApproximate: isReallyApprox || breakdownMode,
+    isApproximate: isReallyApprox || breakdownMode || !!customCs2,
     approxNote,
     heavyTrafficLq,
     heavyTrafficWq
@@ -498,15 +490,6 @@ export const generateCostOptimizationData = (
   }
 
   return results;
-}
-
-export interface SensitivityResult {
-  xValue: number;
-  wq: number;
-  lq: number;
-  rho: number;
-  totalCost: number;
-  isStable: boolean;
 }
 
 /**
