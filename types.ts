@@ -1,5 +1,4 @@
 
-
 /**
  * Represents the current operational status of a Server (Teller).
  */
@@ -222,6 +221,8 @@ export interface ChartDataPoint {
     currentLambda: number;
     currentServers: number;
     utilization: number; // Observed Utilization % (0-100)
+    slaPercent: number; // Service Level Agreement Compliance %
+    lossRate: number; // Probability of Loss/Balking %
     visualSnapshot?: any;
 }
 

@@ -1,5 +1,4 @@
 
-
 import React, { useMemo } from 'react';
 import { 
   LineChart, 
@@ -15,7 +14,8 @@ import {
   ComposedChart,
   Bar,
   BarChart,
-  ReferenceLine
+  ReferenceLine,
+  Cell
 } from 'recharts';
 import { 
     SimulationState, 
@@ -25,6 +25,7 @@ import {
     SensitivityResult 
 } from '../types';
 import { formatTime } from '../mathUtils';
+import ServerTimeline from './ServerTimeline';
 
 interface AnalyticsDashboardProps {
     simState: SimulationState;
@@ -103,6 +104,47 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             tooltipEnd: formatTime(uiConfig.openHour + c.finishTime/60)
         }));
     }, [activeState, uiConfig.openHour]);
+
+    // Calculate Wait Time Histogram
+    const histogramData = useMemo(() => {
+        const completed = activeState?.completedCustomers || [];
+        if (completed.length === 0) return [];
+
+        const waitTimes = completed.map(c => c.waitTime);
+        // Find rough max to determine bin sizing, ensure at least some range
+        const maxWait = Math.max(Math.max(...waitTimes), uiConfig.slTargetSec / 60 * 2);
+        const binCount = 15;
+        const binSize = maxWait / binCount;
+        
+        const slTargetMin = uiConfig.slTargetSec / 60;
+
+        const bins = Array.from({ length: binCount }, (_, i) => ({
+            rangeStart: i * binSize,
+            rangeEnd: (i + 1) * binSize,
+            label: `${(i * binSize).toFixed(1)}-${((i + 1) * binSize).toFixed(1)}m`,
+            count: 0,
+            // Mark if the start of this bin is already violating the SLA
+            isOverTarget: (i * binSize) > slTargetMin
+        }));
+
+        waitTimes.forEach(w => {
+            let idx = Math.floor(w / binSize);
+            if (idx >= binCount) idx = binCount - 1;
+            if (idx < 0) idx = 0;
+            bins[idx].count++;
+        });
+
+        return bins;
+    }, [activeState?.completedCustomers, activeState?.customersServed, uiConfig.slTargetSec]);
+
+    const slGradientOffset = useMemo(() => {
+        // Calculate the offset for the gradient split based on target percent
+        // Recharts gradient goes from 0 (top) to 1 (bottom)
+        // We want Green from Top to Target, Red from Target to Bottom
+        // If Target is 80%, top is 100%, bottom is 0%. 
+        // 80% is at offset (100-80)/100 = 0.2
+        return (100 - uiConfig.slTargetPercent) / 100;
+    }, [uiConfig.slTargetPercent]);
 
     return (
         <div className="space-y-6">
@@ -265,16 +307,120 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                 </div>
             </div>
 
-            {/* Chart 3: Server Utilization */}
-            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 h-[200px] flex flex-col mb-6">
-                <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-4">Server Utilization (%)</h3>
+            {/* Server Occupancy Timeline */}
+            <ServerTimeline 
+                servers={activeState.servers} 
+                currentTime={activeState.currentTime}
+                openHour={uiConfig.openHour}
+            />
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Wait Time Histogram (The Long Tail) */}
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 h-[250px] flex flex-col">
+                    <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-4">Wait Time Distribution (Long Tail)</h3>
+                    <div className="flex-1 w-full relative">
+                        {histogramData.length === 0 ? (
+                            <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-xs italic">
+                                No customers served yet...
+                            </div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={histogramData}>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                    <XAxis 
+                                        dataKey="label" 
+                                        tick={{fontSize: 9, fill: '#94a3b8'}} 
+                                        axisLine={false}
+                                        tickLine={false}
+                                        interval={1}
+                                    />
+                                    <YAxis tick={{fontSize: 10, fill: '#94a3b8'}} axisLine={false} tickLine={false} width={30} />
+                                    <Tooltip 
+                                        cursor={{fill: '#f8fafc'}}
+                                        contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
+                                        itemStyle={{fontSize: '11px', fontWeight: 'bold'}}
+                                    />
+                                    <ReferenceLine x={(uiConfig.slTargetSec / 60).toFixed(1)} stroke="red" strokeDasharray="3 3" label={{ position: 'top',  value: 'SLA', fontSize: 9, fill: 'red' }} />
+                                    <Bar dataKey="count" name="Customers" radius={[4, 4, 0, 0]}>
+                                        {histogramData.map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={entry.isOverTarget ? '#ef4444' : '#3b82f6'} />
+                                        ))}
+                                    </Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
+                    </div>
+                </div>
+
+                {/* Chart 3: Server Utilization & Loss Rate */}
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 h-[250px] flex flex-col">
+                    <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-4">Utilization & Loss Rate</h3>
+                    <div className="flex-1 w-full" onMouseLeave={onChartLeave}>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <ComposedChart data={chartData} onMouseMove={onChartHover}>
+                                <defs>
+                                    <linearGradient id="colorUtil" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                                        <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                <XAxis 
+                                    dataKey="time" 
+                                    tickFormatter={xAxisFormatter} 
+                                    tick={{fontSize: 10, fill: '#94a3b8'}} 
+                                    axisLine={false}
+                                    tickLine={false}
+                                />
+                                <YAxis domain={[0, 100]} tick={{fontSize: 10, fill: '#94a3b8'}} axisLine={false} tickLine={false} width={30} />
+                                <Tooltip 
+                                    labelFormatter={xAxisFormatter}
+                                    contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
+                                    itemStyle={{fontSize: '11px', fontWeight: 'bold'}}
+                                />
+                                <Legend wrapperStyle={{fontSize: '10px', paddingTop: '10px'}} />
+                                
+                                <Area 
+                                    type="monotone" 
+                                    dataKey="utilization" 
+                                    name="Utilization %" 
+                                    stroke="#10b981" 
+                                    strokeWidth={2}
+                                    fillOpacity={1} 
+                                    fill="url(#colorUtil)" 
+                                    isAnimationActive={false}
+                                />
+                                <Line 
+                                    type="monotone" 
+                                    dataKey="lossRate" 
+                                    name="Loss Probability %" 
+                                    stroke="#ef4444" 
+                                    strokeWidth={2}
+                                    dot={false}
+                                    isAnimationActive={false}
+                                />
+                                <ReferenceLine y={80} stroke="orange" strokeDasharray="3 3" label={{ position: 'insideRight',  value: 'Target', fontSize: 9, fill: 'orange' }} />
+                            </ComposedChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+            </div>
+            
+            {/* NEW: Service Level Agreement (SLA) Trend */}
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 h-[250px] flex flex-col">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wide">Service Level (SLA) Trend</h3>
+                    <div className="text-[10px] font-bold text-slate-500">
+                        Target: {uiConfig.slTargetPercent}% within {uiConfig.slTargetSec}s
+                    </div>
+                </div>
                 <div className="flex-1 w-full" onMouseLeave={onChartLeave}>
                     <ResponsiveContainer width="100%" height="100%">
                         <AreaChart data={chartData} onMouseMove={onChartHover}>
                             <defs>
-                                <linearGradient id="colorUtil" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                                <linearGradient id="splitColorSla" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset={slGradientOffset} stopColor="#10b981" stopOpacity={0.8}/>
+                                    <stop offset={slGradientOffset} stopColor="#ef4444" stopOpacity={0.8}/>
                                 </linearGradient>
                             </defs>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
@@ -290,19 +436,19 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                                 labelFormatter={xAxisFormatter}
                                 contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
                                 itemStyle={{fontSize: '11px', fontWeight: 'bold'}}
-                                formatter={(value: number) => [`${value}%`, 'Utilization']}
+                                formatter={(value: number) => [`${value}%`, 'SLA Compliance']}
                             />
                             <Area 
                                 type="monotone" 
-                                dataKey="utilization" 
-                                name="Utilization" 
-                                stroke="#10b981" 
-                                strokeWidth={2}
-                                fillOpacity={1} 
-                                fill="url(#colorUtil)" 
+                                dataKey="slaPercent" 
+                                name="SLA %" 
+                                stroke="#000" 
+                                strokeWidth={1}
+                                strokeOpacity={0.2}
+                                fill="url(#splitColorSla)" 
                                 isAnimationActive={false}
                             />
-                            <ReferenceLine y={80} stroke="orange" strokeDasharray="3 3" label={{ position: 'insideRight',  value: 'Target', fontSize: 9, fill: 'orange' }} />
+                            <ReferenceLine y={uiConfig.slTargetPercent} stroke="black" strokeDasharray="3 3" label={{ position: 'insideRight',  value: 'Goal', fontSize: 9, fill: 'black' }} />
                         </AreaChart>
                     </ResponsiveContainer>
                 </div>

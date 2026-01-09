@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { NetworkNode, NetworkLink, QueueModel, RoutingStrategy, ResourcePool } from '../types';
 import { NetworkEngine } from '../NetworkEngine';
@@ -711,6 +710,55 @@ const NetworkSimulator: React.FC = () => {
                             }}>+ Add Resource Type</button>
                         </div>
                     </div>
+
+                    {/* Bottleneck Analysis */}
+                    {simState && (
+                        <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 mt-4">
+                            <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
+                                <i className="fa-solid fa-fire text-orange-500"></i> Bottleneck Analysis
+                            </h3>
+                            <div className="space-y-3">
+                                {[...simState.nodes]
+                                    .sort((a: NetworkNode, b: NetworkNode) => (b.stats.utilization || 0) - (a.stats.utilization || 0))
+                                    .slice(0, 3)
+                                    .map((node: NetworkNode) => {
+                                        const util = node.stats.utilization || 0;
+                                        const pct = Math.min(100, util * 100);
+                                        
+                                        let barColor = 'bg-amber-500';
+                                        let textColor = 'text-slate-600';
+                                        let isCritical = false;
+
+                                        if (util > 0.9) {
+                                            barColor = 'bg-red-500 animate-pulse';
+                                            textColor = 'text-red-600';
+                                            isCritical = true;
+                                        } else if (util < 0.5) {
+                                            barColor = 'bg-emerald-500';
+                                            textColor = 'text-emerald-600';
+                                        }
+
+                                        return (
+                                            <div key={node.id} className="space-y-1">
+                                                <div className="flex justify-between text-[10px] font-bold">
+                                                    <span className={`flex items-center gap-1 ${textColor}`}>
+                                                        {node.name}
+                                                        {isCritical && <i className="fa-solid fa-triangle-exclamation text-red-500"></i>}
+                                                    </span>
+                                                    <span className="text-slate-500">{pct.toFixed(0)}%</span>
+                                                </div>
+                                                <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden border border-slate-100">
+                                                    <div 
+                                                        className={`h-full ${barColor} transition-all duration-300`} 
+                                                        style={{ width: `${pct}%` }}
+                                                    ></div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                            </div>
+                        </div>
+                    )}
 
                     {/* Node Editor */}
                     {selectedNodeId ? (

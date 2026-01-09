@@ -388,6 +388,17 @@ export const App: React.FC = () => {
       return total;
   }, [displayState]);
 
+  // Calculate Flow Efficiency
+  const flowEfficiency = useMemo(() => {
+      if (!activeState || activeState.totalSystemTime <= 0) return 0;
+      // Flow Efficiency = (Value Added Time / Total Time) * 100
+      // Value Added Time (Service) = Total System Time - Total Wait Time
+      const totalService = activeState.totalSystemTime - activeState.totalWaitTime;
+      return Math.min(100, Math.max(0, (totalService / activeState.totalSystemTime) * 100));
+  }, [activeState?.totalSystemTime, activeState?.totalWaitTime]);
+
+  const flowEffColor = flowEfficiency > 50 ? "text-emerald-600" : (flowEfficiency >= 20 ? "text-yellow-600" : "text-red-600");
+
   // --- RENDER ROUTERS ---
 
   if (appMode === 'NETWORK') {
@@ -596,7 +607,7 @@ export const App: React.FC = () => {
           />
 
           {/* KPI Metrics Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <MetricsCard 
                 label="Avg Wait (Wq)" 
                 value={activeState.statsWq.count > 0 ? (activeState.statsWq.sum / activeState.statsWq.count) : 0} 
@@ -612,6 +623,14 @@ export const App: React.FC = () => {
                 icon="fa-solid fa-stopwatch"
                 colorClass="text-indigo-600"
                 subtext={`vs Theor: ${theoretical?.isStable ? (theoretical.w * 60).toFixed(2) : '∞'}`}
+            />
+            <MetricsCard 
+                label="Flow Efficiency" 
+                value={`${flowEfficiency.toFixed(1)}%`} 
+                unit="" 
+                icon="fa-solid fa-stopwatch-20"
+                colorClass={flowEffColor}
+                subtext="Value / Lead Time"
             />
             <MetricsCard 
                 label="Throughput" 

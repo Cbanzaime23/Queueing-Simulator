@@ -92,6 +92,8 @@ export class SimulationEngine {
         this.scheduleNextArrival();
     }
 
+    // ... (rest of methods)
+
     private getDynamicLambda(timeInMinutes: number): number {
         if (!this.config.useDynamicMode || !this.config.arrivalSchedule) {
             return this.config.lambda;
@@ -189,11 +191,6 @@ export class SimulationEngine {
         this.nextArrivalTime = this.state.currentTime + delay;
     }
 
-    /**
-     * Advances the simulation by a specific time delta.
-     * Handles: Little's Law Integration, Arrivals, Service Starts, Departures, Statistics, Charts.
-     * @param deltaTimeMinutes Time to advance in minutes
-     */
     public tick(deltaTimeMinutes: number) {
         // Reset Event Buffer for this tick
         this.state.events = [];
@@ -363,6 +360,8 @@ export class SimulationEngine {
         });
     }
 
+    // ... (intermediate methods: isDayComplete, setServerState, createNewServer, getInitialState, handleBreakdowns, adjustStaffingLevels, createFactoryCustomer, handleArrival, processSingleArrival, handleJockeying, handleReneging, checkQueueForReneging, assignServers, startServiceBatch, handleDepartures)
+
     public isDayComplete(): boolean {
         // Check Common Queue
         if (this.state.queue.length > 0) return false;
@@ -384,14 +383,6 @@ export class SimulationEngine {
         return this.state.isBankClosed;
     }
 
-    // --- INTERNAL LOGIC ---
-
-    /**
-     * Updates the server state and records the transition in the timeline.
-     * @param server The server object to update
-     * @param newState The new state to transition to
-     * @param time The simulation time of the transition
-     */
     private setServerState(server: Server, newState: ServerState, time: number) {
         if (server.state === newState) return;
 
@@ -1185,9 +1176,6 @@ export class SimulationEngine {
         let customCs2: number | undefined = undefined;
 
         // -- VARIABLE WORKLOAD THEORETICAL ADJUSTMENT --
-        // If variable workload is ON, the service time distribution is Compound.
-        // T = S1 + S2 + ... + Sn where n ~ U[min, max]
-        // We calculate the effective Mean Service Rate and CV^2 to pass to the theoretical engine.
         if (this.config.variableWorkloadMode) {
             const minN = this.config.minWorkloadItems || 1;
             const maxN = this.config.maxWorkloadItems || 1;
@@ -1199,11 +1187,6 @@ export class SimulationEngine {
             // Moments of S (Service Time per Item)
             const meanS = this.config.avgServiceTime; // minutes
             let varS = 0;
-            // Approximation for varS based on distribution type
-            // Var = (Mean * CV)^2
-            // Poisson: CV=1 -> Var = Mean^2
-            // Deterministic: Var = 0
-            // Erlang-k: Var = Mean^2 / k
             if (this.config.serviceType === DistributionType.DETERMINISTIC) varS = 0;
             else if (this.config.serviceType === DistributionType.ERLANG) varS = (meanS * meanS) / this.config.serviceK;
             else varS = meanS * meanS; // Default Poisson
@@ -1280,8 +1263,17 @@ export class SimulationEngine {
         });
         const utilization = activeServerCount > 0 ? parseFloat(((totalUtil / activeServerCount) * 100).toFixed(1)) : 0;
 
+        // Calculate SLA Percent
+        const slaPercent = this.state.customersServed > 0 
+            ? (this.state.customersServedWithinTarget / this.state.customersServed) * 100 
+            : 100; // Default to 100% until proven otherwise
+
+        // Calculate Loss Rate (Cumulative)
+        const lossRate = this.state.customersArrivals > 0 
+            ? (this.state.customersImpatient / this.state.customersArrivals) * 100 
+            : 0;
+
         // Capture Lightweight Visual Snapshot for Scrubbing
-        // Note: JSON.parse/stringify is a simple way to deep clone standard objects.
         const visualSnapshot = {
             queue: JSON.parse(JSON.stringify(this.state.queue)),
             servers: JSON.parse(JSON.stringify(this.state.servers)),
@@ -1309,7 +1301,9 @@ export class SimulationEngine {
             currentLambda,
             currentServers,
             utilization,
-            visualSnapshot // Store the visual state
+            slaPercent: parseFloat(slaPercent.toFixed(1)),
+            lossRate: parseFloat(lossRate.toFixed(1)), // Calculated cumulative loss
+            visualSnapshot
         };
 
         this.state.history.push(point);
