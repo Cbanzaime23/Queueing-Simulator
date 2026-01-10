@@ -266,11 +266,29 @@ export const App: React.FC = () => {
   };
 
   /**
-   * Server Skill Toggling
+   * Server Skill Toggling (Restored)
    */
   const handleToggleServerSkill = (serverId: number, skill: SkillType) => {
-      // Feature temporarily unavailable in hook refactor until engine exposes method
-      console.log("Skill toggle requested", serverId, skill);
+      const activeState = displayState || simState;
+      if (!activeState) return;
+
+      const server = activeState.servers.find(s => s.id === serverId);
+      if (!server) return;
+      
+      let newSkills = [...server.skills];
+      if (newSkills.includes(skill)) {
+          // Remove skill
+          newSkills = newSkills.filter(s => s !== skill);
+      } else {
+          // Add skill
+          newSkills.push(skill);
+      }
+      
+      // Ensure there is at least one skill or default to GENERAL?
+      // For now, allow empty (which effectively disables server) or enforce GENERAL if empty
+      if (newSkills.length === 0) newSkills = [SkillType.GENERAL];
+      
+      controls.updateServerSkills(serverId, newSkills);
   };
 
   /**
@@ -555,19 +573,6 @@ export const App: React.FC = () => {
             >
                 <i className="fa-solid fa-file-csv"></i> <span className="hidden md:inline">Export</span>
             </button>
-
-            {!status.dayComplete ? (
-                <button onClick={controls.toggle} className={`px-4 md:px-6 py-2 rounded-lg font-bold text-white transition-all shadow-md flex items-center gap-2 text-xs md:text-sm ${status.isPaused ? 'bg-green-600 hover:bg-green-700' : 'bg-amber-500 hover:bg-amber-600'}`}>
-                <i className={`fa-solid ${status.isPaused ? 'fa-play' : 'fa-pause'}`}></i> <span className="hidden sm:inline">{status.isPaused ? 'Resume' : 'Pause'}</span>
-                </button>
-            ) : (
-                <div className="px-4 md:px-6 py-2 rounded-lg font-bold text-white bg-slate-700 flex items-center gap-2 shadow-md cursor-default text-xs md:text-sm whitespace-nowrap">
-                <i className="fa-solid fa-check-circle"></i> Day Complete
-                </div>
-            )}
-            <button onClick={controls.reset} className="px-4 md:px-6 py-2 rounded-lg font-bold text-slate-700 bg-slate-200 hover:bg-slate-300 transition-all flex items-center gap-2 text-xs md:text-sm">
-                <i className="fa-solid fa-rotate-left"></i> <span className="hidden sm:inline">Reset</span>
-            </button>
             </div>
         </div>
       </header>
@@ -604,6 +609,9 @@ export const App: React.FC = () => {
               setSimSpeed={controls.setSpeed}
               openHour={uiConfig.openHour}
               currentClockTime={currentClockTime}
+              isPaused={status.isPaused}
+              onTogglePause={controls.toggle}
+              onReset={controls.reset}
           />
 
           {/* KPI Metrics Grid */}

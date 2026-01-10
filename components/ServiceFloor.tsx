@@ -1,5 +1,5 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
     SimulationState, 
     Environment, 
@@ -39,7 +39,6 @@ const getSkillColor = (skill: SkillType) => {
 
 /**
  * Helper: Calculate Dynamic Mood Color
- * Interpolates Green -> Yellow -> Red based on wait time vs patience
  */
 const getCustomerMoodStyle = (
     customer: Customer, 
@@ -47,41 +46,70 @@ const getCustomerMoodStyle = (
     impatientMode: boolean, 
     avgPatienceTime: number
 ): { style: React.CSSProperties, className: string } => {
-    
-    // Fallback if impatient mode is off: Use static type color
     if (!impatientMode) {
         return { style: {}, className: customer.color };
     }
-
     const waitedTime = currentTime - customer.arrivalTime;
     const patienceLimit = customer.patienceTime || avgPatienceTime;
-    
-    // Calculate Anger Ratio (0.0 to 1.0)
     const ratio = Math.min(1.0, waitedTime / patienceLimit);
-    
     let r, g, b;
-
     if (ratio < 0.5) {
-        // Green to Yellow (0 -> 0.5 maps to 0 -> 1)
         const t = ratio * 2;
         r = 34 + (234 - 34) * t;
         g = 197 + (179 - 197) * t;
         b = 94 + (8 - 94) * t;
     } else {
-        // Yellow to Red (0.5 -> 1.0 maps to 0 -> 1)
         const t = (ratio - 0.5) * 2;
         r = 234 + (239 - 234) * t;
         g = 179 + (68 - 179) * t;
         b = 8 + (68 - 8) * t;
     }
-
-    // Add Shake animation if very angry (> 90%)
     const isAngry = ratio > 0.9;
-    
     return {
         style: { backgroundColor: `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})` },
         className: isAngry ? 'animate-stress' : ''
     };
+};
+
+/**
+ * Helper: Get Thematic Environment Styles
+ */
+const getEnvironmentStyles = (env: Environment) => {
+    switch (env) {
+        case Environment.MARKET:
+            return {
+                bgClass: 'bg-orange-50/50',
+                borderClass: 'border-amber-200',
+                patternStyle: {
+                    backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(217, 119, 6, 0.05) 10px, rgba(217, 119, 6, 0.05) 20px)',
+                },
+                columnClass: 'bg-amber-50/90 border-amber-200',
+                iconColor: 'text-amber-500'
+            };
+        case Environment.CALL_CENTER:
+            return {
+                bgClass: 'bg-slate-100',
+                borderClass: 'border-indigo-200',
+                patternStyle: {
+                    backgroundImage: 'linear-gradient(#cbd5e1 1px, transparent 1px), linear-gradient(90deg, #cbd5e1 1px, transparent 1px)',
+                    backgroundSize: '15px 15px',
+                },
+                columnClass: 'bg-slate-100/90 border-indigo-200',
+                iconColor: 'text-indigo-500'
+            };
+        case Environment.BANK:
+        default:
+            return {
+                bgClass: 'bg-slate-50',
+                borderClass: 'border-blue-200',
+                patternStyle: {
+                    backgroundImage: 'radial-gradient(circle, #cbd5e1 1px, transparent 1px)',
+                    backgroundSize: '20px 20px'
+                },
+                columnClass: 'bg-slate-50/90 border-blue-200',
+                iconColor: 'text-blue-500'
+            };
+    }
 };
 
 interface ServiceFloorProps {
@@ -100,6 +128,9 @@ interface ServiceFloorProps {
     setSimSpeed: (speed: number) => void;
     openHour: number;
     currentClockTime: string;
+    isPaused: boolean;
+    onTogglePause: () => void;
+    onReset: () => void;
 }
 
 export const ServiceFloor: React.FC<ServiceFloorProps> = ({
@@ -117,12 +148,22 @@ export const ServiceFloor: React.FC<ServiceFloorProps> = ({
     simSpeed,
     setSimSpeed,
     openHour,
-    currentClockTime
+    currentClockTime,
+    isPaused,
+    onTogglePause,
+    onReset
 }) => {
     // View State for Pan/Zoom
     const [floorViewState, setFloorViewState] = useState({ x: 0, y: 0, scale: 1 });
     const [isFloorPanning, setIsFloorPanning] = useState(false);
     const floorLastMousePos = useRef<{x: number, y: number} | null>(null);
+    const [hoveredServerId, setHoveredServerId] = useState<number | null>(null);
+
+    // Get Current Theme
+    const envStyles = getEnvironmentStyles(environment);
+
+    // Determines if we show the physical waiting area
+    const showWaitingArea = environment === Environment.BANK;
 
     /**
      * Floor Pan/Zoom Handlers
@@ -155,391 +196,296 @@ export const ServiceFloor: React.FC<ServiceFloorProps> = ({
         }));
     };
 
-    const handleFloorTouchStart = (e: React.TouchEvent) => {
-        if (e.touches.length === 1) {
-            setIsFloorPanning(true);
-            const t = e.touches[0];
-            floorLastMousePos.current = { x: t.clientX, y: t.clientY };
-        }
-    };
-
-    const handleFloorTouchMove = (e: React.TouchEvent) => {
-        if (isFloorPanning && floorLastMousePos.current) {
-            const t = e.touches[0];
-            const dx = t.clientX - floorLastMousePos.current.x;
-            const dy = t.clientY - floorLastMousePos.current.y;
-            setFloorViewState(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
-            floorLastMousePos.current = { x: t.clientX, y: t.clientY };
-        }
-    };
-
-    const getImpatientLabel = () => {
-        return environment === Environment.CALL_CENTER ? 'Abandoned' : 'Reneged';
-    };
-
-    // Calculate Impatience Percentage
-    const impatientPercent = activeState.customersArrivals > 0 
-        ? (activeState.customersImpatient / activeState.customersArrivals) * 100 
-        : 0;
-
     return (
         <div 
-            className="rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative min-h-[300px] md:min-h-[400px] flex flex-col bg-white"
+            className={`rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative w-full h-[540px] flex flex-col bg-white transition-all duration-300 ${envStyles.borderClass}`}
         >
             
-            {/* --- OVERLAYS (HUD) --- */}
-            
-            {/* Status Badge */}
-            <div className={`absolute top-2 left-2 md:top-4 md:left-28 z-50 backdrop-blur px-3 py-1 rounded-full text-[10px] md:text-xs font-bold border transition-colors duration-500 pointer-events-none ${activeState.isPanic ? 'bg-orange-500/90 text-white border-orange-600 animate-pulse' : 'bg-white/80 text-slate-500 border-slate-200'}`}>
-                {activeState.isPanic ? (
-                    <>
-                        <i className="fa-solid fa-gauge-high mr-2 text-white"></i> HIGH PRESSURE
-                    </>
-                ) : (
-                    <>
-                        <i className="fa-solid fa-video mr-2 text-blue-500"></i> Live Floor View
-                    </>
+            {/* --- HUD: CONTROL ISLAND --- */}
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 pointer-events-none">
+                <div className="bg-white/90 backdrop-blur-md shadow-lg border border-slate-200 rounded-2xl px-4 py-2 flex items-center gap-4 pointer-events-auto transition-all hover:scale-105">
+                    {/* Clock */}
+                    <div className="flex flex-col items-center border-r pr-4 border-slate-200">
+                        <span className="text-xl font-black text-slate-700 font-mono leading-none">{currentClockTime}</span>
+                        <span className="text-[9px] uppercase font-bold text-slate-400 mt-1">Sim Time</span>
+                    </div>
+
+                    {/* Playback Controls */}
+                    <div className="flex items-center gap-3">
+                         <button 
+                            onClick={onTogglePause}
+                            className={`w-10 h-10 rounded-full flex items-center justify-center text-white shadow-md transition-all active:scale-95 ${isPaused ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-amber-500 hover:bg-amber-600'}`}
+                            title={isPaused ? "Resume Simulation" : "Pause Simulation"}
+                         >
+                             <i className={`fa-solid ${isPaused ? 'fa-play' : 'fa-pause'} text-sm`}></i>
+                         </button>
+
+                         <div className="flex flex-col w-24">
+                             <div className="flex justify-between text-[9px] font-bold text-slate-500 mb-1">
+                                 <span>Speed</span>
+                                 <span>{simSpeed}x</span>
+                             </div>
+                             <input 
+                                type="range" min="1" max="50" 
+                                value={simSpeed} onChange={(e) => setSimSpeed(Number(e.target.value))} 
+                                className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none accent-slate-600 cursor-pointer" 
+                             />
+                         </div>
+
+                         <button 
+                            onClick={onReset}
+                            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors"
+                            title="Reset Simulation"
+                         >
+                             <i className="fa-solid fa-rotate-left text-xs"></i>
+                         </button>
+                    </div>
+                </div>
+
+                {/* Status Badge (Panic Mode) */}
+                {activeState.isPanic && (
+                    <div className="bg-orange-500 text-white px-3 py-1 rounded-full text-[10px] font-bold shadow-md animate-pulse border border-white/20">
+                        <i className="fa-solid fa-gauge-high mr-1"></i> HIGH TRAFFIC MODE
+                    </div>
                 )}
             </div>
 
-            {/* Orbit Cloud Visualization */}
+            {/* Orbit / Scrubbing Indicators */}
             {!scrubbedSnapshot && activeState.orbit.length > 0 && (
-                <div className="absolute top-2 md:top-4 left-1/2 transform -translate-x-1/2 z-50 flex flex-col items-center animate-float pointer-events-none">
-                    <div className="bg-white/80 backdrop-blur border border-cyan-200 text-cyan-600 px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
-                        <i className="fa-solid fa-cloud text-lg"></i>
+                <div className="absolute top-4 left-4 z-40 animate-float pointer-events-none">
+                    <div className="bg-white/90 backdrop-blur border border-cyan-200 text-cyan-600 px-3 py-1.5 rounded-xl shadow-sm flex items-center gap-2">
+                        <div className="bg-cyan-50 p-1.5 rounded-lg">
+                            <i className="fa-solid fa-cloud text-sm"></i>
+                        </div>
                         <div>
-                            <span className="text-[10px] font-bold uppercase block leading-none text-slate-400">Orbit (Retry)</span>
+                            <span className="text-[9px] font-bold uppercase block leading-none text-slate-400">Orbit</span>
                             <span className="text-xs font-bold">{activeState.orbit.length} Waiting</span>
                         </div>
                     </div>
-                    <div className="flex -space-x-1 mt-1 overflow-hidden max-w-[200px]">
-                        {activeState.orbit.slice(0, 8).map((c, i) => (
-                            <div key={c.id + '_orbit'} className={`w-3 h-3 rounded-full border border-white ${c.color}`}></div>
-                        ))}
-                        {activeState.orbit.length > 8 && <div className="w-3 h-3 rounded-full bg-slate-200 border border-white flex items-center justify-center text-[6px] text-slate-500">+</div>}
-                    </div>
                 </div>
             )}
-
-            {/* Scrubbing Indicator Banner */}
+            
             {scrubbedSnapshot && (
-                <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50 bg-amber-500 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 animate-bounce pointer-events-none">
-                    <i className="fa-solid fa-clock-rotate-left"></i>
-                    <div className="text-xs font-bold">
-                        SCRUBBING MODE: {currentClockTime}
-                        <span className="block text-[9px] font-normal opacity-90">Move mouse off chart to resume live view</span>
+                <div className="absolute top-20 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-white px-4 py-1.5 rounded-full shadow-lg flex items-center gap-2 animate-bounce pointer-events-none border-2 border-white">
+                    <i className="fa-solid fa-clock-rotate-left text-xs"></i>
+                    <div className="text-[10px] font-bold uppercase">Scrubbing History</div>
+                </div>
+            )}
+
+            {/* Legend (Global Overlay) */}
+            <div className="absolute bottom-4 left-4 flex gap-3 opacity-60 hover:opacity-100 transition-opacity z-40 pointer-events-auto bg-white/70 backdrop-blur-sm px-2 py-1.5 rounded-lg border border-slate-100 shadow-sm">
+                <div className="flex items-center gap-1 text-[9px] font-bold text-slate-500">
+                    <div className="w-2 h-2 rounded-full bg-blue-500"></div> Normal
+                </div>
+                <div className="flex items-center gap-1 text-[9px] font-bold text-slate-500">
+                    <div className="w-2 h-2 rounded-full bg-amber-400 border border-amber-500"></div> VIP
+                </div>
+                {impatientMode && (
+                    <div className="flex items-center gap-1 text-[9px] font-bold text-slate-500">
+                        <div className="w-2 h-2 rounded-full border-2 border-red-500"></div> Patience
                     </div>
-                </div>
-            )}
+                )}
+            </div>
 
-            {/* Speed Control Overlay (Only visible when not scrubbing) */}
-            {!scrubbedSnapshot && (
-                <div 
-                    className="absolute top-2 right-16 md:top-4 md:right-28 z-50 w-24 md:w-32"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
-                >
-                    <label className="block text-[8px] md:text-[9px] font-bold text-slate-400 uppercase text-right mb-1">Sim Speed</label>
-                    <input type="range" min="1" max="50" value={simSpeed} onChange={(e) => setSimSpeed(Number(e.target.value))} className="w-full h-1 accent-slate-600 bg-slate-200 rounded appearance-none" />
-                </div>
-            )}
-
-            {/* Zoom Controls (Fixed to Container) */}
+            {/* Zoom Controls */}
             <div 
-                className="absolute bottom-4 right-4 z-50 flex flex-col gap-2"
+                className="absolute bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-auto"
                 onMouseDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
             >
-                <button 
-                    onClick={() => setFloorViewState(p => ({...p, scale: Math.min(p.scale + 0.2, 3)}))}
-                    className="w-8 h-8 bg-white rounded shadow text-slate-600 hover:bg-slate-50 flex items-center justify-center font-bold"
-                >
-                    +
-                </button>
-                <button 
-                    onClick={() => setFloorViewState(p => ({...p, scale: Math.max(p.scale - 0.2, 0.5)}))}
-                    className="w-8 h-8 bg-white rounded shadow text-slate-600 hover:bg-slate-50 flex items-center justify-center font-bold"
-                >
-                    -
-                </button>
-                <button 
-                    onClick={() => setFloorViewState({x:0, y:0, scale: 1})}
-                    className="w-8 h-8 bg-white rounded shadow text-slate-400 hover:text-slate-600 hover:bg-slate-50 flex items-center justify-center"
-                    title="Reset View"
-                >
-                    <i className="fa-solid fa-expand text-xs"></i>
-                </button>
+                <button onClick={() => setFloorViewState(p => ({...p, scale: Math.min(p.scale + 0.2, 3)}))} className="w-8 h-8 bg-white rounded-lg shadow border border-slate-100 text-slate-600 hover:bg-slate-50 font-bold">+</button>
+                <button onClick={() => setFloorViewState(p => ({...p, scale: Math.max(p.scale - 0.2, 0.5)}))} className="w-8 h-8 bg-white rounded-lg shadow border border-slate-100 text-slate-600 hover:bg-slate-50 font-bold">-</button>
+                <button onClick={() => setFloorViewState({x:0, y:0, scale: 1})} className="w-8 h-8 bg-white rounded-lg shadow border border-slate-100 text-slate-400 hover:text-slate-600" title="Reset View"><i className="fa-solid fa-expand text-xs"></i></button>
             </div>
 
             {/* FLEX CONTAINER FOR COLUMNS */}
             <div className="flex h-full relative">
 
-                {/* 1. ARRIVAL ZONE (LEFT - FIXED) */}
-                <div className="w-14 md:w-24 bg-slate-50 border-r border-slate-200 flex flex-col items-center justify-center relative shadow-inner z-20 shrink-0">
-                    <div className="absolute inset-0 bg-slate-100/50"></div>
-                    <div className="relative z-10 flex flex-col items-center opacity-50">
-                        <i className="fa-solid fa-door-open text-2xl md:text-4xl text-slate-400 mb-2"></i>
-                        <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 -rotate-90 mt-4 whitespace-nowrap">Entrance</span>
+                {/* 1. ARRIVAL ZONE */}
+                <div className={`w-16 md:w-24 border-r flex flex-col items-center justify-center relative shadow-inner z-20 shrink-0 ${envStyles.columnClass}`}>
+                    <div className="relative z-10 flex flex-col items-center opacity-40">
+                        <i className={`fa-solid ${environment === Environment.CALL_CENTER ? 'fa-phone-volume' : 'fa-door-open'} text-3xl text-slate-400 mb-2`}></i>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 -rotate-90 mt-4 whitespace-nowrap">
+                            {environment === Environment.CALL_CENTER ? 'Inbound' : 'Entrance'}
+                        </span>
                     </div>
                     <div className="absolute bottom-0 w-full h-2 bg-emerald-500/20"></div>
                 </div>
 
-                {/* 2. MAIN SERVICE FLOOR (MIDDLE - PANNABLE/ZOOMABLE) */}
+                {/* 2. MAIN SERVICE FLOOR */}
                 <div 
-                    className="flex-1 relative overflow-hidden bg-slate-100 cursor-move"
+                    className={`flex-1 relative overflow-hidden cursor-move ${envStyles.bgClass}`}
                     onMouseDown={handleFloorMouseDown}
                     onMouseMove={handleFloorMouseMove}
                     onMouseUp={handleFloorMouseUp}
                     onMouseLeave={handleFloorMouseUp}
-                    onTouchStart={handleFloorTouchStart}
-                    onTouchMove={handleFloorTouchMove}
-                    onTouchEnd={handleFloorMouseUp}
                     onWheel={handleFloorWheel}
                     style={{ touchAction: 'none', cursor: isFloorPanning ? 'grabbing' : 'grab' }}
                 >
-                    {/* Transformed World Container */}
                     <div 
                         style={{ 
                             transform: `translate(${floorViewState.x}px, ${floorViewState.y}px) scale(${floorViewState.scale})`,
                             transformOrigin: 'center center',
                             width: '100%',
-                            height: '100%'
+                            height: '100%',
+                            ...envStyles.patternStyle
                         }}
-                        className="w-full h-full flex flex-col bg-grid-pattern"
+                        className="w-full h-full flex flex-col transition-colors duration-500"
                     >
-                        
-                        {/* FLOATING GLOBAL EFFECTS LAYER (Inside world space) */}
+                        {/* Red Vignette for Panic Mode */}
+                        <div className={`absolute inset-0 pointer-events-none transition-opacity duration-500 z-0 ${activeState.isPanic ? 'opacity-100 animate-pulse-slow' : 'opacity-0'}`}
+                             style={{ background: 'radial-gradient(circle, transparent 60%, rgba(239, 68, 68, 0.15) 100%)' }}></div>
+
+                        {/* Floating Effects */}
                         <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
                             {floatingEffects.filter(e => !e.serverId).map(e => (
-                                <div 
-                                    key={e.id} 
-                                    style={{left: `${e.x}%`, top: `${e.y}%`}} 
-                                    className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center animate-float-fade"
-                                >
-                                    <div className={`text-2xl drop-shadow-md ${e.color}`}>
-                                        <i className={`fa-solid ${e.icon}`}></i>
-                                    </div>
-                                    <div className={`text-[10px] font-black uppercase tracking-wider bg-white/90 px-2 py-0.5 rounded shadow-sm border border-slate-100 ${e.color}`}>
-                                        {e.label}
-                                    </div>
+                                <div key={e.id} style={{left: `${e.x}%`, top: `${e.y}%`}} className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center animate-float-fade">
+                                    <div className={`text-2xl drop-shadow-md ${e.color}`}><i className={`fa-solid ${e.icon}`}></i></div>
+                                    <div className={`text-[9px] font-black uppercase bg-white/90 px-2 py-0.5 rounded shadow-sm border border-slate-100 ${e.color}`}>{e.label}</div>
                                 </div>
                             ))}
                         </div>
 
-                        {/* TOP HALF: SERVERS */}
-                        <div className="flex-1 flex flex-col items-center justify-center p-2 md:p-4 relative">
-                            <div className="flex justify-center flex-wrap w-full">
-                                
-                                {/* Dedicated Queue: Balked Customers Area */}
-                                {queueTopology === QueueTopology.DEDICATED && activeState.recentlyBalked.length > 0 && !scrubbedSnapshot && (
-                                    <div className="absolute top-2 left-1/2 transform -translate-x-1/2 bg-red-100/80 px-4 py-2 rounded-full border border-red-200 flex items-center gap-2 z-20">
-                                        <span className="text-[10px] font-bold text-red-500 uppercase">Rejected Entry</span>
-                                        <div className="flex -space-x-2">
-                                            {activeState.recentlyBalked.map(c => (
-                                                <div key={c.id} className="w-6 h-6 rounded-full bg-red-500 border-2 border-white flex items-center justify-center text-[10px] text-white animate-balk">
-                                                    <i className="fa-solid fa-xmark"></i>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-
+                        {/* TOP HALF: SERVERS (Expands if waiting area is hidden) */}
+                        <div className={`flex-1 flex flex-col items-center justify-center p-4 relative z-10 transition-all duration-500`}>
+                            <div className="flex justify-center flex-wrap w-full gap-4">
                                 {activeState.servers.map((server) => {
-                                    // Server Profile Card Logic
-                                    const uptime = activeState.currentTime - server.startTime;
-                                    const utilizationPct = uptime > 0 ? (server.totalBusyTime / uptime) * 100 : 0;
                                     const isPanic = activeState.isPanic;
                                     const isEditing = editingServerId === server.id;
+                                    const isHovered = hoveredServerId === server.id;
+                                    
+                                    // Focus Mode Logic: 
+                                    // If ANY server is hovered (or editing), dim all others.
+                                    const isDimmed = (hoveredServerId !== null && !isHovered) || (editingServerId !== null && !isEditing);
 
-                                    // Dynamic Styles based on State
-                                    let cardBg = "bg-white";
-                                    let cardBorder = "border-slate-200";
-                                    if (server.state === ServerState.BUSY) {
-                                        if (isPanic) {
-                                            cardBg = "bg-orange-50";
-                                            cardBorder = "border-orange-300";
-                                        } else {
-                                            cardBg = "bg-emerald-50";
-                                            cardBorder = "border-emerald-200";
-                                        }
-                                    } else if (server.state === ServerState.OFFLINE) {
-                                        cardBg = "bg-red-50 bg-striped";
-                                        cardBorder = "border-red-200";
-                                    }
+                                    // Progress Bar & Status Calculation
+                                    let progressPct = 0;
+                                    let remainingText = '';
+                                    let barClass = 'bg-slate-200';
+                                    let barStyle: React.CSSProperties = {};
 
-                                    // Seniority Styles
-                                    let badgeColor = "text-slate-400 border-slate-300 bg-slate-100";
-                                    let badgeIcon = "fa-user";
-                                    if (server.typeLabel === 'Senior') {
-                                        badgeColor = "text-yellow-600 border-yellow-300 bg-yellow-50";
-                                        badgeIcon = "fa-star";
-                                    } else if (server.typeLabel === 'Junior') {
-                                        badgeColor = "text-amber-700 border-amber-400 bg-amber-100";
-                                        badgeIcon = "fa-graduation-cap"; 
+                                    if (server.state === ServerState.OFFLINE) {
+                                        progressPct = 100;
+                                        barStyle = { 
+                                            backgroundImage: 'repeating-linear-gradient(45deg, #ef4444, #ef4444 8px, #fee2e2 8px, #fee2e2 16px)' 
+                                        };
+                                        remainingText = 'FIXING';
+                                    } else if (server.state === ServerState.BUSY && server._activeCustomer && server._activeCustomer.startTime !== undefined && server._activeCustomer.finishTime !== undefined) {
+                                        const total = server._activeCustomer.finishTime - server._activeCustomer.startTime;
+                                        const elapsed = activeState.currentTime - server._activeCustomer.startTime;
+                                        progressPct = Math.min(100, Math.max(0, (elapsed / total) * 100));
+                                        
+                                        const rem = Math.max(0, server._activeCustomer.finishTime - activeState.currentTime);
+                                        remainingText = `${rem.toFixed(1)}m`;
+                                        
+                                        barClass = isPanic ? 'bg-amber-500' : 'bg-emerald-500';
                                     }
 
                                     return (
-                                    <div key={server.id} className="flex flex-col items-center relative group mx-1 md:mx-2 mb-2 md:mb-4">
-                                        {/* Batch / Multi-Customer indicator - Absolute over Card */}
-                                        {server._activeBatch && server._activeBatch.length > 1 && (
-                                            <div className="absolute -top-2 -right-2 bg-indigo-600 text-white text-[9px] font-bold w-5 h-5 flex items-center justify-center rounded-full z-20 border-2 border-white">
-                                                {server._activeBatch.length}
-                                            </div>
-                                        )}
-
-                                        {/* Breakdown Indicator */}
-                                        {server.state === ServerState.OFFLINE && (
-                                            <div className="absolute -top-4 z-20 text-red-500 animate-bounce">
-                                                <i className="fa-solid fa-triangle-exclamation text-xl"></i>
-                                            </div>
-                                        )}
-
-                                        {/* FLOATING SERVER EFFECTS */}
-                                        {floatingEffects.filter(e => e.serverId === server.id).map(e => (
-                                            <div key={e.id} className="absolute -top-12 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center animate-float-fade pointer-events-none whitespace-nowrap">
-                                                <div className={`text-xl drop-shadow-md ${e.color}`}>
-                                                    <i className={`fa-solid ${e.icon}`}></i>
-                                                </div>
-                                                <div className={`text-[8px] font-black uppercase tracking-wider bg-white/95 px-1.5 py-0.5 rounded shadow border ${e.color}`}>
-                                                    {e.label}
-                                                </div>
-                                            </div>
-                                        ))}
-                                        
-                                        {/* Departing Customers (Animation Layer) - MOVING TO EXIT */}
-                                        {!scrubbedSnapshot && activeState.recentlyDeparted.filter(c => c.serverId === server.id).map(c => (
-                                            <div 
-                                                key={`depart-${c.id}`} 
-                                                className={`absolute top-4 w-4 h-4 rounded-full shadow-sm z-30 animate-walk-out ${c.color} flex items-center justify-center text-[10px] text-white/80`}
-                                                style={{ left: '50%', marginLeft: '-0.5rem' }} 
-                                            >
-                                                {environment === Environment.CALL_CENTER && <i className="fa-solid fa-phone"></i>}
-                                            </div>
-                                        ))}
-
-                                        {/* SERVER PROFILE CARD */}
-                                        <div className={`w-14 h-20 md:w-20 md:h-28 rounded-xl border-2 transition-all duration-300 relative flex flex-col items-center justify-between p-1.5 md:p-2 shadow-sm ${cardBg} ${cardBorder}`}>
-
-                                            {/* EDIT MODE OVERLAY */}
-                                            {isEditing ? (
-                                                <div className="absolute inset-0 bg-white z-50 rounded-lg flex flex-col p-1 animate-fade-in" onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
-                                                    <div className="flex justify-between items-center mb-1 pb-1 border-b">
-                                                        <span className="text-[8px] font-bold uppercase">Skills</span>
-                                                        <button onClick={() => setEditingServerId(null)} className="text-green-600 hover:bg-green-50 rounded px-1">
-                                                            <i className="fa-solid fa-check text-[10px]"></i>
-                                                        </button>
-                                                    </div>
-                                                    <div className="flex-1 overflow-y-auto space-y-1">
-                                                        {[SkillType.SALES, SkillType.TECH, SkillType.SUPPORT].map(skill => (
-                                                            <button 
-                                                                key={skill}
-                                                                onClick={() => handleToggleServerSkill(server.id, skill)}
-                                                                className={`w-full text-[8px] font-bold py-1 rounded flex items-center gap-1 px-1 ${server.skills.includes(skill) ? 'bg-blue-100 text-blue-700' : 'bg-slate-50 text-slate-400'}`}
-                                                            >
-                                                                <div className={`w-1.5 h-1.5 rounded-full ${server.skills.includes(skill) ? getSkillColor(skill) : 'bg-slate-300'}`}></div>
-                                                                {skill}
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                            <>
-                                                {/* Header: Badge & Settings */}
-                                                <div className="w-full flex justify-between items-center z-10">
-                                                    {/* Seniority Badge */}
-                                                    <div className={`w-4 h-4 md:w-5 md:h-5 rounded-full border flex items-center justify-center text-[8px] md:text-[9px] ${badgeColor}`} title={server.typeLabel}>
-                                                        <i className={`fa-solid ${badgeIcon}`}></i>
-                                                    </div>
-                                                    
-                                                    {/* Settings Gear (Visible on Hover/Touch if Skill Routing is On) */}
-                                                    {skillBasedRouting && (
-                                                        <button 
-                                                            onClick={() => setEditingServerId(server.id)}
-                                                            className="text-slate-300 hover:text-slate-600 transition-colors"
-                                                            onMouseDown={(e) => e.stopPropagation()}
-                                                            onTouchStart={(e) => e.stopPropagation()}
-                                                        >
-                                                            <i className="fa-solid fa-gear text-[10px]"></i>
-                                                        </button>
-                                                    )}
-                                                </div>
-
-                                                {/* Avatar (Center) */}
-                                                <div className={`text-xl md:text-3xl z-10 transition-colors ${server.state === ServerState.OFFLINE ? 'opacity-20' : (server.state === ServerState.BUSY ? 'text-slate-700' : 'text-slate-300')}`}>
-                                                    {environment === Environment.CALL_CENTER && <i className="fa-solid fa-headset"></i>}
-                                                    {environment === Environment.MARKET && <i className="fa-solid fa-cart-shopping"></i>}
-                                                    {environment === Environment.BANK && <i className="fa-solid fa-user-tie"></i>}
-                                                </div>
-
-                                                {/* Active Customer Overlay (if busy) */}
-                                                {server.state === ServerState.BUSY && server._activeCustomer && (
-                                                    <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 mt-2 z-20">
-                                                        <div className={`w-5 h-5 md:w-6 md:h-6 rounded-full shadow-md border-2 border-white flex items-center justify-center text-[8px] md:text-[10px] text-white ${server._activeCustomer.color} animate-pop-in`}>
-                                                            {skillBasedRouting ? (
-                                                                <i className={`fa-solid ${getSkillIcon(server._activeCustomer.requiredSkill)}`}></i>
-                                                            ) : (
-                                                                environment === Environment.CALL_CENTER ? <i className="fa-solid fa-phone"></i> : <i className="fa-solid fa-user"></i>
-                                                            )}
-                                                        </div>
+                                    <div 
+                                        key={server.id} 
+                                        className={`flex flex-col items-center relative group transition-all duration-300 
+                                            ${isDimmed ? 'opacity-40 grayscale scale-95' : 'opacity-100 scale-100'} 
+                                            ${isHovered || isEditing ? 'z-20 scale-105' : ''}`
+                                        }
+                                        onMouseEnter={() => setHoveredServerId(server.id)}
+                                        onMouseLeave={() => setHoveredServerId(null)}
+                                        onClick={(e) => {
+                                            if (skillBasedRouting) {
+                                                e.stopPropagation();
+                                                setEditingServerId(isEditing ? null : server.id);
+                                            }
+                                        }}
+                                    >
+                                        {/* Server Card */}
+                                        <div className={`w-20 h-28 rounded-xl border-2 transition-all duration-300 relative flex flex-col items-center justify-between p-2 shadow-sm ${server.state === ServerState.BUSY ? 'bg-white border-emerald-400' : 'bg-white border-slate-200'} ${isHovered || isEditing ? 'shadow-lg ring-4 ring-blue-100' : ''}`}>
+                                            
+                                            {/* Progress Bar (Dynamic) */}
+                                            <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden mb-1 relative border border-slate-200">
+                                                <div 
+                                                    className={`h-full transition-all duration-200 ${barClass}`} 
+                                                    style={{ 
+                                                        width: `${progressPct}%`,
+                                                        ...barStyle
+                                                    }}
+                                                ></div>
+                                                
+                                                {/* Text Overlay */}
+                                                {remainingText && (
+                                                    <div className="absolute inset-0 flex items-center justify-center text-[8px] font-black text-slate-700 uppercase tracking-tight drop-shadow-sm leading-none z-10">
+                                                        {remainingText}
                                                     </div>
                                                 )}
+                                            </div>
 
-                                                {/* Footer: Skills & Load */}
-                                                <div className="w-full flex flex-col gap-1 items-center z-10">
-                                                    {/* Skills Row */}
-                                                    {skillBasedRouting && (
-                                                        <div className="flex gap-0.5 justify-center flex-wrap">
-                                                            {server.skills.map((skill, i) => (
-                                                                <div key={i} className={`w-1 h-1 md:w-1.5 md:h-1.5 rounded-full ${getSkillColor(skill)}`} title={skill}></div>
-                                                            ))}
-                                                        </div>
-                                                    )}
-
-                                                    {/* Stress/Load Bar */}
-                                                    <div className="w-full h-1 md:h-1.5 bg-slate-200/50 rounded-full overflow-hidden mt-1 relative border border-black/5">
-                                                        {isPanic ? (
-                                                            <div className="h-full bg-red-500 animate-pulse w-full"></div>
-                                                        ) : (
-                                                            <div className="h-full bg-emerald-400 transition-all duration-500" style={{width: `${utilizationPct}%`}}></div>
-                                                        )}
-                                                    </div>
+                                            {/* Editing Overlay (Skill Selector) */}
+                                            {isEditing && skillBasedRouting ? (
+                                                <div className="absolute inset-0 bg-slate-800/90 rounded-lg z-20 flex flex-col items-center justify-center gap-1 p-2 animate-fade-in" onClick={(e) => e.stopPropagation()}>
+                                                    <div className="text-[9px] font-bold text-white mb-1">SKILLS</div>
+                                                    {[SkillType.SALES, SkillType.TECH, SkillType.SUPPORT].map(skill => (
+                                                        <button 
+                                                            key={skill}
+                                                            onClick={() => handleToggleServerSkill(server.id, skill)}
+                                                            className={`w-full text-[8px] font-bold py-1 px-2 rounded flex items-center justify-between ${server.skills.includes(skill) ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                                        >
+                                                            <span>{skill}</span>
+                                                            {server.skills.includes(skill) && <i className="fa-solid fa-check"></i>}
+                                                        </button>
+                                                    ))}
+                                                    <button onClick={() => setEditingServerId(null)} className="mt-1 text-[8px] text-slate-400 hover:text-white">Done</button>
                                                 </div>
-                                            </>
+                                            ) : (
+                                                <>
+                                                    {/* Avatar */}
+                                                    <div className={`text-3xl z-10 transition-colors ${server.state === ServerState.OFFLINE ? 'text-red-300 opacity-50' : (server.state === ServerState.BUSY ? envStyles.iconColor : 'text-slate-200')}`}>
+                                                        {environment === Environment.CALL_CENTER && <i className="fa-solid fa-headset"></i>}
+                                                        {environment === Environment.MARKET && <i className="fa-solid fa-cart-shopping"></i>}
+                                                        {environment === Environment.BANK && <i className="fa-solid fa-user-tie"></i>}
+                                                    </div>
+
+                                                    {/* Skills Dots */}
+                                                    <div className="flex gap-1 mt-auto">
+                                                        {server.skills.slice(0, 3).map((skill, i) => (
+                                                            <div key={i} className={`w-1.5 h-1.5 rounded-full ${getSkillColor(skill)}`}></div>
+                                                        ))}
+                                                    </div>
+                                                </>
                                             )}
                                         </div>
 
-                                        {/* State Label */}
-                                        <div className={`mt-1 text-[8px] md:text-[9px] font-bold uppercase tracking-wider ${
-                                            server.state === ServerState.BUSY ? (activeState.isPanic ? 'text-orange-600' : 'text-emerald-600') : 
-                                            server.state === ServerState.OFFLINE ? 'text-red-400' : 'text-slate-300'
-                                        }`}>
-                                            {server.state}
+                                        {/* Active Customer Bubble (Hidden when editing) */}
+                                        {!isEditing && server.state === ServerState.BUSY && server._activeCustomer && (
+                                            <div className="absolute top-10 left-1/2 -translate-x-1/2 z-20">
+                                                <div className={`w-8 h-8 rounded-full shadow-lg border-2 border-white flex items-center justify-center text-[10px] text-white ${server._activeCustomer.color} animate-pop-in`}>
+                                                    <i className={`fa-solid ${getSkillIcon(server._activeCustomer.requiredSkill)}`}></i>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Status Text (or "Edit" hint on hover) */}
+                                        <div className="mt-1 bg-white/80 px-2 py-0.5 rounded text-[9px] font-bold uppercase text-slate-500 shadow-sm border border-slate-100 transition-all">
+                                            {isHovered && skillBasedRouting ? 'Edit' : server.state}
                                         </div>
 
-                                        {/* Dedicated Queue (Vertical) */}
+                                        {/* Dedicated Queue Render (ALWAYS VISIBLE if applicable) */}
                                         {queueTopology === QueueTopology.DEDICATED && (
-                                            <div className="mt-1 flex flex-col gap-1 items-center min-h-[40px]">
+                                            <div className="mt-2 flex flex-col gap-1 items-center">
                                                 {server.queue.map((c, i) => {
-                                                    // Dynamic Mood Coloring
                                                     const mood = getCustomerMoodStyle(c, activeState.currentTime, impatientMode, avgPatienceTime);
+                                                    const patiencePct = c.patienceTime ? Math.max(0, 1 - ((activeState.currentTime - c.arrivalTime) / c.patienceTime)) : 1;
+                                                    
                                                     return (
-                                                    <div 
-                                                    key={c.id} 
-                                                    className={`w-3 h-3 rounded-full shadow-sm transition-all flex items-center justify-center text-[6px] text-white ${mood.className} ${!impatientMode ? c.color : ''} ${!scrubbedSnapshot ? 'animate-walk-in' : ''} ${i === 0 && !scrubbedSnapshot ? 'animate-pulse' : ''} relative group`}
-                                                    style={mood.style}
-                                                    >
-                                                        {skillBasedRouting && <i className={`fa-solid ${getSkillIcon(c.requiredSkill)}`}></i>}
-                                                        
-                                                        {/* EWT Badge for last in line */}
-                                                        {i === server.queue.length - 1 && c.estimatedWaitTime !== undefined && c.estimatedWaitTime > 0 && !scrubbedSnapshot && (
-                                                            <div className="absolute -right-16 top-0 bg-slate-800 text-white text-[9px] px-2 py-0.5 rounded shadow-lg animate-pop-in z-20 whitespace-nowrap">
-                                                                Est: {c.estimatedWaitTime.toFixed(1)}m
-                                                                <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 border-y-4 border-y-transparent border-r-4 border-r-slate-800"></div>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )})}
-                                                {server.queue.length > 0 && <span className="text-[9px] text-slate-400 mt-1 font-mono">{server.queue.length}</span>}
+                                                        <div key={c.id} className="relative group">
+                                                            {/* Patience Ring */}
+                                                            {impatientMode && c.patienceTime && (
+                                                                <svg className="absolute -top-1 -left-1 w-5 h-5 pointer-events-none" viewBox="0 0 36 36">
+                                                                    <path className="text-slate-200" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="4" />
+                                                                    <path className={`${patiencePct < 0.2 ? 'text-red-500 animate-pulse' : (patiencePct > 0.5 ? 'text-emerald-500' : 'text-amber-500')} transition-all duration-500`} strokeDasharray={`${patiencePct*100}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="4" />
+                                                                </svg>
+                                                            )}
+                                                            <div className={`w-3 h-3 rounded-full shadow-sm z-10 relative ${mood.className} ${!impatientMode ? c.color : ''}`} style={mood.style}></div>
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>
@@ -547,88 +493,67 @@ export const ServiceFloor: React.FC<ServiceFloorProps> = ({
                             </div>
                         </div>
 
-                        {/* BOTTOM HALF: QUEUE (WAITING AREA) */}
-                        <div className="min-h-[120px] bg-slate-50/50 border-t border-dashed border-slate-200 p-4 flex flex-col justify-end items-center relative">
-                            <div className="absolute top-2 left-4 text-[9px] font-bold text-slate-300 uppercase">Waiting Area</div>
+                        {/* BOTTOM HALF: WAITING AREA (Conditionally Rendered) */}
+                        {showWaitingArea && (
+                            <div className={`min-h-[140px] bg-white/40 border-t-2 border-dashed ${envStyles.borderClass} p-4 flex flex-col justify-end items-center relative z-10 backdrop-blur-sm`}>
+                                 <div className="absolute top-2 left-4 text-[9px] font-black tracking-widest text-slate-400 uppercase">Waiting Area</div>
+                                 
+                                 {/* Common Queue Visualization */}
+                                 {queueTopology === QueueTopology.COMMON && (
+                                     <div className="flex flex-wrap gap-2 justify-center max-w-3xl">
+                                         {activeState.queue.slice(0, 50).map((c, i) => {
+                                             const mood = getCustomerMoodStyle(c, activeState.currentTime, impatientMode, avgPatienceTime);
+                                             const patiencePct = c.patienceTime ? Math.max(0, 1 - ((activeState.currentTime - c.arrivalTime) / c.patienceTime)) : 1;
+                                             
+                                             // Focus Mode: Highlight if matches hovered server
+                                             const hoveredServer = hoveredServerId !== null ? activeState.servers.find(s => s.id === hoveredServerId) : null;
+                                             const isHighlighted = hoveredServer && hoveredServer.skills.includes(c.requiredSkill);
+                                             
+                                             // Opacity & Scale logic
+                                             let opacityClass = 'opacity-100 scale-100';
+                                             if (hoveredServerId !== null) {
+                                                 if (isHighlighted) opacityClass = 'opacity-100 scale-110 z-20';
+                                                 else opacityClass = 'opacity-30 grayscale scale-90';
+                                             }
 
-                            {/* Common Queue (Horizontal/Snake) */}
-                            {queueTopology === QueueTopology.COMMON && (
-                                <div className="w-full max-w-2xl">
-                                    <div className="flex flex-wrap gap-1 md:gap-2 justify-center items-center p-2 relative">
-                                        {/* Empty State */}
-                                        {activeState.queue.length === 0 && activeState.recentlyBalked.length === 0 && (
-                                            <span className="text-xs text-slate-300 font-bold uppercase tracking-widest">Queue Empty</span>
-                                        )}
-                                        
-                                        {/* Balked Customers (Common Queue) */}
-                                        {!scrubbedSnapshot && activeState.recentlyBalked.map(c => (
-                                            <div 
-                                                key={c.id}
-                                                className={`w-3 h-3 md:w-4 md:h-4 rounded-full shadow-sm flex items-center justify-center text-[8px] md:text-[10px] text-white bg-red-500 animate-balk`}
-                                                title="Left immediately"
-                                            >
-                                                <i className="fa-solid fa-xmark"></i>
+                                             return (
+                                                 <div key={c.id} className={`relative group transition-all duration-300 ${opacityClass}`} title={`Skill: ${c.requiredSkill}`}>
+                                                     {/* Patience Ring */}
+                                                     {impatientMode && c.patienceTime && (
+                                                         <svg className="absolute -top-1 -left-1 w-6 h-6 pointer-events-none z-0" viewBox="0 0 36 36">
+                                                             <path className="text-slate-200" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
+                                                             <path className={`${patiencePct < 0.2 ? 'text-red-500 animate-pulse' : (patiencePct > 0.5 ? 'text-emerald-500' : 'text-amber-500')} transition-all duration-500`} strokeDasharray={`${patiencePct*100}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
+                                                         </svg>
+                                                     )}
+                                                     
+                                                     <div 
+                                                        className={`w-4 h-4 rounded-full shadow-sm flex items-center justify-center text-[8px] text-white z-10 relative ${mood.className} ${!impatientMode ? c.color : ''} ${!scrubbedSnapshot ? 'animate-walk-in' : ''}`}
+                                                        style={mood.style}
+                                                     >
+                                                         {skillBasedRouting && <i className={`fa-solid ${getSkillIcon(c.requiredSkill)}`}></i>}
+                                                     </div>
+                                                 </div>
+                                             );
+                                         })}
+                                         {activeState.queue.length > 50 && (
+                                            <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500">
+                                                +{activeState.queue.length - 50}
                                             </div>
-                                        ))}
-
-                                        {/* Queued Customers */}
-                                        {activeState.queue.slice(0, 40).map((customer, idx) => {
-                                            const mood = getCustomerMoodStyle(customer, activeState.currentTime, impatientMode, avgPatienceTime);
-                                            return (
-                                            <div 
-                                                key={customer.id} 
-                                                className={`relative w-3 h-3 md:w-4 md:h-4 rounded-full shadow-sm transition-all duration-500 flex items-center justify-center text-[6px] md:text-[8px] text-white/90 ${mood.className} ${!impatientMode ? customer.color : ''} ${!scrubbedSnapshot ? 'animate-walk-in' : ''} ${idx === 0 && !scrubbedSnapshot ? 'animate-pulse' : ''}`}
-                                                style={mood.style}
-                                                title={`Arrived: ${formatTime(openHour + customer.arrivalTime/60)}`}
-                                            >
-                                                {skillBasedRouting ? (
-                                                    <i className={`fa-solid ${getSkillIcon(customer.requiredSkill)} text-[6px]`}></i>
-                                                ) : (
-                                                    environment === Environment.CALL_CENTER && <i className="fa-solid fa-phone"></i>
-                                                )}
-
-                                                {/* EWT Badge for last in line */}
-                                                {idx === activeState.queue.length - 1 && customer.estimatedWaitTime !== undefined && customer.estimatedWaitTime > 0 && !scrubbedSnapshot && (
-                                                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] px-2 py-0.5 rounded shadow-lg animate-pop-in z-20 whitespace-nowrap">
-                                                        Est: {customer.estimatedWaitTime.toFixed(1)}m
-                                                        <div className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-full border-x-4 border-x-transparent border-t-4 border-t-slate-800"></div>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )})}
-                                        {activeState.queue.length > 40 && (
-                                            <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-slate-200 flex items-center justify-center text-[8px] md:text-[10px] text-slate-500 font-bold">
-                                                +{activeState.queue.length - 40}
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Customer Legend */}
-                            <div className="absolute bottom-2 right-4 flex gap-4 text-[10px] text-slate-500">
-                                <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-blue-500"></div> Normal</div>
-                                <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-amber-400 border border-amber-500"></div> VIP</div>
-                                <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-rose-500 border border-rose-600"></div> Impatient</div>
+                                         )}
+                                     </div>
+                                 )}
                             </div>
-
-                            {/* Impatience Indicator */}
-                            {activeState.customersImpatient > 0 && (
-                                <div className="absolute bottom-2 left-4 text-xs text-red-400 font-bold flex items-center gap-2">
-                                    <i className="fa-solid fa-person-walking-arrow-right"></i>
-                                    <span>{activeState.customersImpatient} {getImpatientLabel()} ({impatientPercent.toFixed(1)}%)</span>
-                                </div>
-                            )}
-                        </div>
+                        )}
                     </div>
                 </div>
 
-                {/* 3. DEPARTURE ZONE (RIGHT - FIXED) */}
-                <div className="w-14 md:w-24 bg-slate-50 border-l border-slate-200 flex flex-col items-center justify-center relative shadow-inner z-20 shrink-0">
-                    <div className="absolute inset-0 bg-slate-100/50"></div>
-                    <div className="relative z-10 flex flex-col items-center opacity-50">
-                        <i className="fa-solid fa-person-walking-arrow-right text-2xl md:text-4xl text-slate-400 mb-2"></i>
-                        <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 rotate-90 mt-4 whitespace-nowrap">Exit</span>
+                {/* 3. DEPARTURE ZONE */}
+                <div className={`w-16 md:w-24 border-l flex flex-col items-center justify-center relative shadow-inner z-20 shrink-0 ${envStyles.columnClass}`}>
+                    <div className="relative z-10 flex flex-col items-center opacity-40">
+                        <i className={`fa-solid ${environment === Environment.CALL_CENTER ? 'fa-check-double' : 'fa-person-walking-arrow-right'} text-3xl text-slate-400 mb-2`}></i>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 rotate-90 mt-4 whitespace-nowrap">
+                            {environment === Environment.CALL_CENTER ? 'Handled' : 'Exit'}
+                        </span>
                     </div>
                     <div className="absolute bottom-0 w-full h-2 bg-red-500/20"></div>
                 </div>

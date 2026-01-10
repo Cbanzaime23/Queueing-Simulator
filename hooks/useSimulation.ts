@@ -5,7 +5,8 @@ import {
     SimulationConfig, 
     SimulationState, 
     FloatingEffect, 
-    SimulationEventType 
+    SimulationEventType,
+    SkillType
 } from '../types';
 
 interface UseSimulationReturn {
@@ -17,6 +18,7 @@ interface UseSimulationReturn {
         toggle: () => void;
         reset: () => void;
         setSpeed: (speed: number) => void;
+        updateServerSkills: (serverId: number, skills: SkillType[]) => void;
     };
     status: {
         isPaused: boolean;
@@ -66,6 +68,15 @@ export const useSimulation = (config: SimulationConfig): UseSimulationReturn => 
         setFloatingEffects([]);
         lastUpdateRef.current = performance.now();
     }, [config]);
+
+    // Skill Update Handler
+    const updateServerSkills = useCallback((serverId: number, skills: SkillType[]) => {
+        if (engineRef.current) {
+            engineRef.current.updateServerSkills(serverId, skills);
+            // Force state update to reflect changes immediately in UI
+            setSimState({ ...engineRef.current.getState() });
+        }
+    }, []);
 
     // Animation Loop
     useEffect(() => {
@@ -160,7 +171,8 @@ export const useSimulation = (config: SimulationConfig): UseSimulationReturn => 
             pause,
             toggle,
             reset,
-            setSpeed: setSimSpeed
+            setSpeed: setSimSpeed,
+            updateServerSkills
         },
         status: {
             isPaused,
