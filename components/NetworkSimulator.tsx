@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NetworkNode, NetworkLink, QueueModel, RoutingStrategy, ResourcePool } from '../types';
 import { NetworkEngine } from '../NetworkEngine';
-import { solveJacksonNetwork, calculateTheoreticalMetrics } from '../mathUtils';
+import { solveJacksonNetwork, calculateTheoreticalMetrics, formatTime } from '../mathUtils';
+import NetworkMetrics from './NetworkMetrics';
 
 interface VisualParticle {
     id: string;
@@ -52,9 +53,12 @@ const NetworkSimulator: React.FC = () => {
     const [engine, setEngine] = useState<NetworkEngine | null>(null);
     const [simState, setSimState] = useState<any>(null);
     const [isRunning, setIsRunning] = useState(false);
+    const [simSpeed, setSimSpeed] = useState<number>(5);
+    const [openHour] = useState(9); // Default start time 9 AM
     
-    // Heatmap Toggle
+    // Modes
     const [isHeatmapMode, setIsHeatmapMode] = useState(false);
+    const [isVSMMode, setIsVSMMode] = useState(false);
     
     // Visual Particle State
     const [particles, setParticles] = useState<VisualParticle[]>([]);
@@ -71,6 +75,9 @@ const NetworkSimulator: React.FC = () => {
     const dragNodeRef = useRef<string | null>(null);
     const lastMousePos = useRef<{x: number, y: number} | null>(null);
     const canvasRef = useRef<HTMLDivElement>(null);
+    
+    // Loop Timer
+    const lastFrameTime = useRef<number>(0);
 
     // Theoretical State
     const [effLambdas, setEffLambdas] = useState<Map<string, number>>(new Map());
@@ -200,8 +207,25 @@ const NetworkSimulator: React.FC = () => {
         // When running, update state in loop
         let frameId: number;
         if (isRunning && engine) {
-            const loop = () => {
-                engine.tick(0.1); // 0.1 min per tick
+            // Reset timer on start to prevent large delta jump
+            if (lastFrameTime.current === 0) lastFrameTime.current = performance.now();
+
+            const loop = (time: number) => {
+                const dtMs = time - lastFrameTime.current;
+                
+                // Cap dtMs to avoid huge jumps if tab inactive
+                if (dtMs > 1000) {
+                    lastFrameTime.current = time;
+                    frameId = requestAnimationFrame(loop);
+                    return;
+                }
+
+                // Calculate sim minutes to advance based on speed
+                // dtMs / 1000 = real seconds
+                // * simSpeed = sim minutes
+                const dtMin = (dtMs / 1000) * simSpeed;
+
+                engine.tick(dtMin);
                 const newState = engine.getState();
                 setSimState({ ...newState });
                 
@@ -240,6 +264,7 @@ const NetworkSimulator: React.FC = () => {
                     });
                 }
 
+                lastFrameTime.current = time;
                 frameId = requestAnimationFrame(loop);
             };
             frameId = requestAnimationFrame(loop);
@@ -248,9 +273,12 @@ const NetworkSimulator: React.FC = () => {
              const eng = new NetworkEngine(nodes, links, resourcePools);
              setEngine(eng);
              setSimState(eng.getState());
+        } else {
+            // Reset timer so it starts fresh next time we run
+            lastFrameTime.current = 0;
         }
         return () => cancelAnimationFrame(frameId);
-    }, [isRunning, engine, nodes, links, resourcePools]); // dependencies ensure fresh closure
+    }, [isRunning, engine, nodes, links, resourcePools, simSpeed]); // dependencies ensure fresh closure
 
     // Recalculate theoreticals when structure changes
     useEffect(() => {
@@ -378,6 +406,7 @@ const NetworkSimulator: React.FC = () => {
         const eng = new NetworkEngine(nodes, links, resourcePools);
         setEngine(eng);
         setSimState(eng.getState());
+        lastFrameTime.current = 0;
     };
 
     const addLink = (sourceId: string, targetId: string) => {
@@ -398,7 +427,93 @@ const NetworkSimulator: React.FC = () => {
     };
 
     // --- Render Helpers ---
+    
+    // NEW: VSM Node Renderer
+    const renderVSMNode = (node: NetworkNode) => {
+        const liveNode = (simState?.nodes?.find((n: NetworkNode) => n.id === node.id)) || node;
+        
+        // Lean Metrics Calculation
+        const PT = node.avgServiceTime; // Process Time
+        
+        const served = liveNode.stats?.servedCount || 0;
+        const totalWait = liveNode.stats?.totalWait || 0;
+        const blocked = liveNode.stats?.blockedCount || 0;
+        
+        const avgWait = served > 0 ? totalWait / served : 0;
+        const LT = avgWait + PT; // Lead Time = Wait + Process
+        
+        // Value Added Ratio (PCE)
+        const VA_Percent = LT > 0 ? (PT / LT) * 100 : 100;
+        
+        // Complete & Accurate (%C/A) - Inverse of blocking
+        const totalAttempts = served + blocked;
+        const CA_Percent = totalAttempts > 0 ? ((served / totalAttempts) * 100) : 100;
+        
+        const qLength = liveNode.queue?.length || 0;
+        const busyServers = liveNode.servers?.filter((s: any) => s.state === 'BUSY').length || 0;
+
+        return (
+            <div 
+                key={node.id}
+                className={`absolute rounded bg-white shadow-lg border-2 border-slate-800 select-none group z-10 touch-none w-40 flex flex-col`}
+                style={{ left: node.x, top: node.y }}
+                onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                onTouchStart={(e) => handleNodeTouchStart(e, node.id)}
+            >
+                {/* VSM Inventory Triangle (Queue) */}
+                <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex flex-col items-center">
+                    <div className="relative">
+                        <i className="fa-solid fa-triangle-exclamation text-yellow-400 text-4xl drop-shadow-md"></i>
+                        <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[40%] text-xs font-black text-slate-800">
+                            {qLength}
+                        </span>
+                    </div>
+                    <div className="text-[9px] font-bold bg-white/80 px-1 rounded -mt-1 border border-slate-200">
+                        WIP (I)
+                    </div>
+                </div>
+
+                {/* Data Box Header */}
+                <div className="bg-slate-800 text-white p-1 text-center font-bold text-xs border-b border-slate-800 truncate">
+                    {node.name}
+                </div>
+                
+                {/* Data Box Rows */}
+                <div className="text-[10px] font-mono divide-y divide-slate-300">
+                    <div className="grid grid-cols-2">
+                        <div className="bg-slate-100 p-1 font-bold border-r border-slate-300">P/T</div>
+                        <div className="p-1 text-right">{PT.toFixed(1)}m</div>
+                    </div>
+                    <div className="grid grid-cols-2">
+                        <div className="bg-slate-100 p-1 font-bold border-r border-slate-300">L/T</div>
+                        <div className="p-1 text-right font-bold text-blue-600">{LT.toFixed(1)}m</div>
+                    </div>
+                    <div className="grid grid-cols-2">
+                        <div className="bg-slate-100 p-1 font-bold border-r border-slate-300">%VA</div>
+                        <div className={`p-1 text-right ${VA_Percent < 20 ? 'text-red-500 font-bold' : 'text-emerald-600'}`}>
+                            {VA_Percent.toFixed(0)}%
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2">
+                        <div className="bg-slate-100 p-1 font-bold border-r border-slate-300">%C/A</div>
+                        <div className={`p-1 text-right ${CA_Percent < 90 ? 'text-amber-600' : 'text-slate-600'}`}>
+                            {CA_Percent.toFixed(0)}%
+                        </div>
+                    </div>
+                     <div className="grid grid-cols-2">
+                        <div className="bg-slate-100 p-1 font-bold border-r border-slate-300">Res</div>
+                        <div className="p-1 text-right">{busyServers}/{node.serverCount}</div>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
     const renderNode = (node: NetworkNode) => {
+        // Switcher for VSM Mode
+        if (isVSMMode) return renderVSMNode(node);
+
+        // Standard Rendering
         // Live State if available, else Config State
         // Safe access to simState.nodes with fallback to config node
         const liveNode = (simState?.nodes?.find((n: NetworkNode) => n.id === node.id)) || node;
@@ -516,11 +631,15 @@ const NetworkSimulator: React.FC = () => {
             <svg className="absolute top-0 left-0 w-full h-full pointer-events-none overflow-visible">
                 <defs>
                     <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-                        <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+                        <polygon points="0 0, 10 3.5, 0 7" fill={isVSMMode ? "#000" : "#94a3b8"} />
                     </marker>
                     <marker id="arrowhead-red" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
                         <polygon points="0 0, 10 3.5, 0 7" fill="#ef4444" />
                     </marker>
+                    {/* VSM Style Pattern */}
+                    <pattern id="stripe-pattern" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
+                        <line x1="0" y1="0" x2="0" y2="10" stroke="#000" strokeWidth="2" />
+                    </pattern>
                 </defs>
                 {links.map(link => {
                     const source = nodes.find(n => n.id === link.sourceId);
@@ -542,33 +661,41 @@ const NetworkSimulator: React.FC = () => {
                         ? 'JSQ' 
                         : `A:${((link.probA ?? link.probability) * 100).toFixed(0)} B:${((link.probB ?? link.probability) * 100).toFixed(0)}`;
 
+                    // VSM Links are stark black
+                    const strokeColor = isVSMMode ? (isBlocked ? "#ef4444" : "#0f172a") : (isBlocked ? "#ef4444" : "#94a3b8");
+                    const strokeWidth = isVSMMode ? (isBlocked ? "4" : "3") : (isBlocked ? "4" : "2");
+                    const marker = isBlocked ? "url(#arrowhead-red)" : "url(#arrowhead)";
+
                     return (
                         <g key={link.id}>
                             <line 
                                 x1={x1} y1={y1} x2={x2} y2={y2} 
-                                stroke={isBlocked ? "#ef4444" : "#94a3b8"} 
-                                strokeWidth={isBlocked ? "4" : "2"}
+                                stroke={strokeColor} 
+                                strokeWidth={strokeWidth}
                                 strokeOpacity={isBlocked ? "0.8" : "1"}
-                                markerEnd={isBlocked ? "url(#arrowhead-red)" : "url(#arrowhead)"} 
+                                strokeDasharray={isVSMMode ? "5,5" : ""}
+                                markerEnd={marker} 
                                 className="transition-all duration-75"
                             />
                             {/* Class Condition Badge */}
-                            {link.condition === 'CLASS_A_ONLY' && (
+                            {!isVSMMode && link.condition === 'CLASS_A_ONLY' && (
                                 <g transform={`translate(${(x1+x2)/2 - 15}, ${(y1+y2)/2 - 10})`}>
                                     <circle r="6" fill="#fbbf24" stroke="#d97706" strokeWidth="1" />
                                     <text x="0" y="3" textAnchor="middle" fontSize="8" fontWeight="bold" fill="#78350f">A</text>
                                 </g>
                             )}
-                            {link.condition === 'CLASS_B_ONLY' && (
+                            {!isVSMMode && link.condition === 'CLASS_B_ONLY' && (
                                 <g transform={`translate(${(x1+x2)/2 - 15}, ${(y1+y2)/2 - 10})`}>
                                     <circle r="6" fill="#94a3b8" stroke="#475569" strokeWidth="1" />
                                     <text x="0" y="3" textAnchor="middle" fontSize="8" fontWeight="bold" fill="#ffffff">B</text>
                                 </g>
                             )}
                             
-                            <text x={(x1+x2)/2} y={(y1+y2)/2 - 5} className={`text-[8px] font-bold bg-white/90 px-1 rounded border border-slate-100 ${isBlocked ? 'fill-red-500' : 'fill-slate-500'}`}>
-                                {probLabel}
-                            </text>
+                            {!isVSMMode && (
+                                <text x={(x1+x2)/2} y={(y1+y2)/2 - 5} className={`text-[8px] font-bold bg-white/90 px-1 rounded border border-slate-100 ${isBlocked ? 'fill-red-500' : 'fill-slate-500'}`}>
+                                    {probLabel}
+                                </text>
+                            )}
                         </g>
                     );
                 })}
@@ -600,24 +727,25 @@ const NetworkSimulator: React.FC = () => {
                         </select>
                     </div>
                     
-                    {/* Heatmap Toggle */}
-                    <div className="flex items-center justify-between bg-slate-100 p-2 rounded border border-slate-200">
-                        <span className="text-[10px] font-bold text-slate-600 uppercase">Heatmap Mode</span>
-                        <button 
-                            onClick={() => setIsHeatmapMode(!isHeatmapMode)}
-                            className={`w-10 h-5 rounded-full relative transition-colors ${isHeatmapMode ? 'bg-orange-500' : 'bg-slate-300'}`}
-                        >
-                            <div className={`w-3 h-3 bg-white rounded-full absolute top-1 transition-all ${isHeatmapMode ? 'left-6' : 'left-1'}`}></div>
-                        </button>
-                    </div>
+                    {/* Visual Mode Toggles */}
+                    <div className="grid grid-cols-2 gap-2">
+                        {/* Heatmap Toggle */}
+                        <div className={`flex flex-col items-center justify-center p-2 rounded border cursor-pointer transition-all ${isHeatmapMode ? 'bg-orange-50 border-orange-200' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'}`}
+                             onClick={() => { setIsHeatmapMode(!isHeatmapMode); setIsVSMMode(false); }}>
+                            <span className={`text-[10px] font-bold uppercase mb-1 ${isHeatmapMode ? 'text-orange-600' : 'text-slate-500'}`}>Heatmap</span>
+                            <div className={`w-8 h-4 rounded-full relative transition-colors ${isHeatmapMode ? 'bg-orange-500' : 'bg-slate-300'}`}>
+                                <div className={`w-3 h-3 bg-white rounded-full absolute top-0.5 transition-all ${isHeatmapMode ? 'left-4.5' : 'left-0.5'}`} style={{left: isHeatmapMode ? '18px' : '2px'}}></div>
+                            </div>
+                        </div>
 
-                    <div className="flex gap-2">
-                        <button onClick={() => setIsRunning(!isRunning)} className={`flex-1 py-2 rounded text-xs font-bold text-white transition-colors ${isRunning ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-500 hover:bg-emerald-600'}`}>
-                            <i className={`fa-solid ${isRunning ? 'fa-pause' : 'fa-play'} mr-2`}></i> {isRunning ? 'Pause' : 'Simulate'}
-                        </button>
-                        <button onClick={resetSim} className="px-4 py-2 bg-slate-200 text-slate-600 rounded text-xs font-bold hover:bg-slate-300">
-                            <i className="fa-solid fa-rotate-left"></i>
-                        </button>
+                        {/* VSM Toggle */}
+                        <div className={`flex flex-col items-center justify-center p-2 rounded border cursor-pointer transition-all ${isVSMMode ? 'bg-blue-50 border-blue-200' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'}`}
+                             onClick={() => { setIsVSMMode(!isVSMMode); setIsHeatmapMode(false); }}>
+                            <span className={`text-[10px] font-bold uppercase mb-1 ${isVSMMode ? 'text-blue-600' : 'text-slate-500'}`}>VSM View</span>
+                            <div className={`w-8 h-4 rounded-full relative transition-colors ${isVSMMode ? 'bg-blue-600' : 'bg-slate-300'}`}>
+                                <div className={`w-3 h-3 bg-white rounded-full absolute top-0.5 transition-all`} style={{left: isVSMMode ? '18px' : '2px'}}></div>
+                            </div>
+                        </div>
                     </div>
 
                     {/* SAVE / LOAD JSON */}
@@ -639,6 +767,10 @@ const NetworkSimulator: React.FC = () => {
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-6 max-h-[40vh] lg:max-h-none">
+                    
+                    {/* NEW: Network Metrics Card */}
+                    <NetworkMetrics simState={simState} />
+
                     {/* Global Stats */}
                     {simState && (
                         <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
@@ -663,56 +795,75 @@ const NetworkSimulator: React.FC = () => {
                         </div>
                     )}
 
+                    {/* VSM LEGEND */}
+                    {isVSMMode && (
+                        <div className="p-3 bg-slate-800 text-white rounded-lg shadow-sm">
+                            <h3 className="text-xs font-bold uppercase mb-2 border-b border-slate-600 pb-1">VSM Legend</h3>
+                            <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                <div><span className="font-bold text-slate-400">P/T:</span> Process Time</div>
+                                <div><span className="font-bold text-slate-400">L/T:</span> Lead Time</div>
+                                <div><span className="font-bold text-slate-400">%VA:</span> Value Added</div>
+                                <div><span className="font-bold text-slate-400">%C/A:</span> Comp/Accurate</div>
+                            </div>
+                            <div className="mt-2 text-[9px] italic text-slate-400">
+                                <i className="fa-solid fa-triangle-exclamation text-yellow-400 mr-1"></i>
+                                Inventory / Queue Count
+                            </div>
+                        </div>
+                    )}
+
                     {/* Global Resources Dashboard */}
-                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-                        <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
-                            <i className="fa-solid fa-layer-group"></i> Global Resources
-                        </h3>
-                        <div className="space-y-3">
-                            {liveResourcePools.map((pool: ResourcePool) => (
-                                <div key={pool.id} className="space-y-1">
-                                    <div className="flex justify-between text-[10px] font-bold text-slate-600">
-                                        <span>{pool.name}</span>
-                                        <span>{pool.availableCount} / {pool.totalCount} Avail</span>
-                                    </div>
-                                    <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
-                                        <div 
-                                            className={`h-full ${pool.color} transition-all duration-300`} 
-                                            style={{ width: `${(pool.availableCount / pool.totalCount) * 100}%` }}
-                                        ></div>
-                                    </div>
-                                    {/* Resource Editor Mini (Only when stopped) */}
-                                    {!isRunning && (
-                                        <div className="flex justify-between items-center px-1">
-                                            <button 
-                                                onClick={() => {
-                                                    setResourcePools(prev => prev.map(p => p.id === pool.id ? {...p, totalCount: Math.max(1, p.totalCount - 1), availableCount: Math.max(1, p.totalCount - 1)} : p));
-                                                }}
-                                                className="text-[10px] text-slate-400 hover:text-red-500"
-                                            >-</button>
-                                            <button 
-                                                onClick={() => {
-                                                    setResourcePools(prev => prev.map(p => p.id === pool.id ? {...p, totalCount: p.totalCount + 1, availableCount: p.totalCount + 1} : p));
-                                                }}
-                                                className="text-[10px] text-slate-400 hover:text-green-500"
-                                            >+</button>
+                    {!isVSMMode && (
+                        <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                            <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
+                                <i className="fa-solid fa-layer-group"></i> Global Resources
+                            </h3>
+                            <div className="space-y-3">
+                                {liveResourcePools.map((pool: ResourcePool) => (
+                                    <div key={pool.id} className="space-y-1">
+                                        <div className="flex justify-between text-[10px] font-bold text-slate-600">
+                                            <span>{pool.name}</span>
+                                            <span>{pool.availableCount} / {pool.totalCount} Avail</span>
                                         </div>
-                                    )}
-                                </div>
-                            ))}
+                                        <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
+                                            <div 
+                                                className={`h-full ${pool.color} transition-all duration-300`} 
+                                                style={{ width: `${(pool.availableCount / pool.totalCount) * 100}%` }}
+                                            ></div>
+                                        </div>
+                                        {/* Resource Editor Mini (Only when stopped) */}
+                                        {!isRunning && (
+                                            <div className="flex justify-between items-center px-1">
+                                                <button 
+                                                    onClick={() => {
+                                                        setResourcePools(prev => prev.map(p => p.id === pool.id ? {...p, totalCount: Math.max(1, p.totalCount - 1), availableCount: Math.max(1, p.totalCount - 1)} : p));
+                                                    }}
+                                                    className="text-[10px] text-slate-400 hover:text-red-500"
+                                                >-</button>
+                                                <button 
+                                                    onClick={() => {
+                                                        setResourcePools(prev => prev.map(p => p.id === pool.id ? {...p, totalCount: p.totalCount + 1, availableCount: p.totalCount + 1} : p));
+                                                    }}
+                                                    className="text-[10px] text-slate-400 hover:text-green-500"
+                                                >+</button>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                            
+                            {/* Resource Editor (Simple) */}
+                            <div className="mt-3 pt-3 border-t border-slate-200">
+                                <button className="text-[10px] text-blue-600 font-bold hover:underline" onClick={() => {
+                                    const newId = `r${resourcePools.length + 1}`;
+                                    setResourcePools([...resourcePools, { id: newId, name: `Resource ${newId}`, totalCount: 2, availableCount: 2, color: 'bg-indigo-500' }]);
+                                }}>+ Add Resource Type</button>
+                            </div>
                         </div>
-                        
-                        {/* Resource Editor (Simple) */}
-                        <div className="mt-3 pt-3 border-t border-slate-200">
-                            <button className="text-[10px] text-blue-600 font-bold hover:underline" onClick={() => {
-                                const newId = `r${resourcePools.length + 1}`;
-                                setResourcePools([...resourcePools, { id: newId, name: `Resource ${newId}`, totalCount: 2, availableCount: 2, color: 'bg-indigo-500' }]);
-                            }}>+ Add Resource Type</button>
-                        </div>
-                    </div>
+                    )}
 
                     {/* Bottleneck Analysis */}
-                    {simState && (
+                    {simState && !isVSMMode && (
                         <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 mt-4">
                             <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
                                 <i className="fa-solid fa-fire text-orange-500"></i> Bottleneck Analysis
@@ -948,6 +1099,50 @@ const NetworkSimulator: React.FC = () => {
                 onWheel={handleWheel}
                 style={{ touchAction: 'none', cursor: isPanning ? 'grabbing' : 'grab' }}
             >
+                {/* --- CONTROL ISLAND (HUD) --- */}
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 pointer-events-none">
+                    <div className="bg-white/90 backdrop-blur-md shadow-lg border border-slate-200 rounded-2xl px-4 py-2 flex items-center gap-4 pointer-events-auto transition-all hover:scale-105">
+                        {/* Clock */}
+                        <div className="flex flex-col items-center border-r pr-4 border-slate-200">
+                            <span className="text-xl font-black text-slate-700 font-mono leading-none">
+                                {simState ? formatTime(openHour + (simState.currentTime / 60)) : '09:00 AM'}
+                            </span>
+                            <span className="text-[9px] uppercase font-bold text-slate-400 mt-1">Sim Time</span>
+                        </div>
+
+                        {/* Playback Controls */}
+                        <div className="flex items-center gap-3">
+                             <button 
+                                onClick={() => setIsRunning(!isRunning)}
+                                className={`w-10 h-10 rounded-full flex items-center justify-center text-white shadow-md transition-all active:scale-95 ${isRunning ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-amber-500 hover:bg-amber-600'}`}
+                                title={isRunning ? "Pause Simulation" : "Start Simulation"}
+                             >
+                                 <i className={`fa-solid ${isRunning ? 'fa-pause' : 'fa-play'} text-sm`}></i>
+                             </button>
+
+                             <div className="flex flex-col w-24">
+                                 <div className="flex justify-between text-[9px] font-bold text-slate-500 mb-1">
+                                     <span>Speed</span>
+                                     <span>{simSpeed}x</span>
+                                 </div>
+                                 <input 
+                                    type="range" min="1" max="50" 
+                                    value={simSpeed} onChange={(e) => setSimSpeed(Number(e.target.value))} 
+                                    className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none accent-slate-600 cursor-pointer" 
+                                 />
+                             </div>
+
+                             <button 
+                                onClick={resetSim}
+                                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors"
+                                title="Reset Simulation"
+                             >
+                                 <i className="fa-solid fa-rotate-left text-xs"></i>
+                             </button>
+                        </div>
+                    </div>
+                </div>
+
                 {/* Background Dot Grid */}
                 <div 
                     className="absolute inset-0 pointer-events-none opacity-20"
