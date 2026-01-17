@@ -24,7 +24,7 @@ import {
 } from './types';
 import { SimulationEngine } from './SimulationEngine';
 import MetricsCard from './components/MetricsCard';
-import ConfigPanel from './components/ConfigPanel';
+import { ConfigPanel } from './components/ConfigPanel';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import NetworkSimulator from './components/NetworkSimulator';
 import DataLab from './components/DataLab';

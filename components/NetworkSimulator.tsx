@@ -4,6 +4,7 @@ import { NetworkNode, NetworkLink, QueueModel, RoutingStrategy, ResourcePool } f
 import { NetworkEngine } from '../NetworkEngine';
 import { solveJacksonNetwork, calculateTheoreticalMetrics, formatTime } from '../mathUtils';
 import NetworkMetrics from './NetworkMetrics';
+import NetworkAnalytics from './NetworkAnalytics';
 
 interface VisualParticle {
     id: string;
@@ -768,8 +769,11 @@ const NetworkSimulator: React.FC = () => {
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-6 max-h-[40vh] lg:max-h-none">
                     
-                    {/* NEW: Network Metrics Card */}
+                    {/* Network Metrics Card */}
                     <NetworkMetrics simState={simState} />
+
+                    {/* WIP Analytics Chart */}
+                    <NetworkAnalytics simState={simState} nodes={nodes} />
 
                     {/* Global Stats */}
                     {simState && (

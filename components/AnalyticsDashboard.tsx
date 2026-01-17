@@ -15,7 +15,9 @@ import {
   Bar,
   BarChart,
   ReferenceLine,
-  Cell
+  Cell,
+  ScatterChart,
+  Scatter
 } from 'recharts';
 import { 
     SimulationState, 
@@ -136,6 +138,34 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 
         return bins;
     }, [activeState?.completedCustomers, activeState?.customersServed, uiConfig.slTargetSec]);
+
+    // Calculate Service Time Histogram
+    const serviceHistogramData = useMemo(() => {
+        const completed = activeState?.completedCustomers || [];
+        if (completed.length === 0) return [];
+
+        const serviceTimes = completed.map(c => c.serviceTime);
+        // Determine max for binning, ensuring range covers typical variability
+        const maxVal = Math.max(Math.max(...serviceTimes), uiConfig.serviceTimeInput * 2);
+        const binCount = 15;
+        const binSize = Math.max(0.1, maxVal / binCount);
+        
+        const bins = Array.from({ length: binCount }, (_, i) => ({
+            label: `${(i * binSize).toFixed(1)}-${((i + 1) * binSize).toFixed(1)}m`,
+            count: 0,
+            // Highlight if significantly higher than average (e.g., > 1.5x avg)
+            isLong: (i * binSize) > (uiConfig.serviceTimeInput * 1.5)
+        }));
+
+        serviceTimes.forEach(val => {
+            let idx = Math.floor(val / binSize);
+            if (idx >= binCount) idx = binCount - 1;
+            if (idx < 0) idx = 0;
+            bins[idx].count++;
+        });
+
+        return bins;
+    }, [activeState?.completedCustomers, activeState?.customersServed, uiConfig.serviceTimeInput]);
 
     const slGradientOffset = useMemo(() => {
         // Calculate the offset for the gradient split based on target percent
@@ -344,6 +374,42 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                                     <Bar dataKey="count" name="Customers" radius={[4, 4, 0, 0]}>
                                         {histogramData.map((entry, index) => (
                                             <Cell key={`cell-${index}`} fill={entry.isOverTarget ? '#ef4444' : '#3b82f6'} />
+                                        ))}
+                                    </Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
+                    </div>
+                </div>
+
+                {/* Service Time Distribution */}
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 h-[250px] flex flex-col">
+                    <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-4">Service Time Distribution</h3>
+                    <div className="flex-1 w-full relative">
+                        {serviceHistogramData.length === 0 ? (
+                            <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-xs italic">
+                                No customers served yet...
+                            </div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={serviceHistogramData}>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                    <XAxis 
+                                        dataKey="label" 
+                                        tick={{fontSize: 9, fill: '#94a3b8'}} 
+                                        axisLine={false}
+                                        tickLine={false}
+                                        interval={1}
+                                    />
+                                    <YAxis tick={{fontSize: 10, fill: '#94a3b8'}} axisLine={false} tickLine={false} width={30} />
+                                    <Tooltip 
+                                        cursor={{fill: '#f8fafc'}}
+                                        contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
+                                        itemStyle={{fontSize: '11px', fontWeight: 'bold'}}
+                                    />
+                                    <Bar dataKey="count" name="Customers" radius={[4, 4, 0, 0]}>
+                                        {serviceHistogramData.map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={entry.isLong ? '#f59e0b' : '#10b981'} />
                                         ))}
                                     </Bar>
                                 </BarChart>

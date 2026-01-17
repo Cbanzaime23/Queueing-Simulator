@@ -7,9 +7,9 @@ import {
     QueueModel, 
     Customer, 
     StatisticalAccumulator,
-    TheoreticalMetrics,
+    TheoreticalMetrics, 
     ServerSelectionStrategy,
-    DistributionType,
+    DistributionType, 
     QueueTopology,
     DepartedCustomer,
     CustomerLogEntry,
@@ -25,8 +25,11 @@ const VIP_COLOR = 'bg-amber-400 ring-2 ring-amber-200 border-amber-500';
 const IMPATIENT_COLOR = 'bg-rose-500 ring-2 ring-rose-200 border-rose-600';
 
 const MAX_HISTORY_POINTS = 100;
-const VISUAL_DEPARTURE_DURATION = 0.5; // minutes (sim time) to keep departed customer for animation
-const VISUAL_BALK_DURATION = 0.5; // minutes
+// Increased durations to ensure customers complete their walk animation even at high simulation speeds (e.g. 50x)
+// At 50x speed, 15 simulation minutes = 18 real seconds, which is plenty for walking to exit.
+// Invisible meshes will linger at exit if speed is low, which is acceptable performance-wise.
+const VISUAL_DEPARTURE_DURATION = 15.0; 
+const VISUAL_BALK_DURATION = 15.0; 
 
 /**
  * A Modular Discrete Event Simulation Engine for Queueing Systems.

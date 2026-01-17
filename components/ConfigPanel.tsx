@@ -1,5 +1,6 @@
 
 import React, { useState, useMemo } from 'react';
+import katex from 'katex';
 import { 
     SimulationUIConfig, 
     TheoreticalMetrics, 
@@ -20,7 +21,7 @@ interface ConfigPanelProps {
     onReset: () => void;
 }
 
-const ConfigPanel: React.FC<ConfigPanelProps> = ({ 
+export const ConfigPanel: React.FC<ConfigPanelProps> = ({ 
     config, 
     onConfigChange, 
     theoretical, 
@@ -88,19 +89,19 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
     };
 
     // --- DOCUMENTATION GENERATION ---
-    const modelNotation = useMemo(() => {
-        const a = config.arrivalType === DistributionType.POISSON ? 'M' : config.arrivalType === DistributionType.DETERMINISTIC ? 'D' : config.arrivalType === DistributionType.TRACE ? 'Trace' : config.arrivalType === DistributionType.ERLANG ? `E${config.erlangK}` : 'G';
-        const s = config.serviceType === DistributionType.POISSON ? 'M' : config.serviceType === DistributionType.DETERMINISTIC ? 'D' : config.serviceType === DistributionType.TRACE ? 'Trace' : config.serviceType === DistributionType.ERLANG ? `E${config.erlangServiceK}` : 'G';
-        const servers = config.selectedModel === QueueModel.MMINF ? '∞' : config.selectedModel === QueueModel.MM1 ? '1' : (config.useDynamicMode ? 's(t)' : config.serverCountInput);
+    const modelNotationLatex = useMemo(() => {
+        const a = config.arrivalType === DistributionType.POISSON ? 'M' : config.arrivalType === DistributionType.DETERMINISTIC ? 'D' : config.arrivalType === DistributionType.TRACE ? '\\text{Trace}' : config.arrivalType === DistributionType.ERLANG ? `E_{${config.erlangK}}` : 'G';
+        const s = config.serviceType === DistributionType.POISSON ? 'M' : config.serviceType === DistributionType.DETERMINISTIC ? 'D' : config.serviceType === DistributionType.TRACE ? '\\text{Trace}' : config.serviceType === DistributionType.ERLANG ? `E_{${config.erlangServiceK}}` : 'G';
+        const servers = config.selectedModel === QueueModel.MMINF ? '\\infty' : config.selectedModel === QueueModel.MM1 ? '1' : (config.useDynamicMode ? 's(t)' : config.serverCountInput);
         
         let suffix = '';
-        if (config.selectedModel === QueueModel.MMSK) suffix = `/${config.capacityK} (Cap)`;
-        if (config.selectedModel === QueueModel.MMS_N_POP) suffix = `//${config.populationSize} (Pop)`;
+        if (config.selectedModel === QueueModel.MMSK) suffix = `/${config.capacityK}`;
+        if (config.selectedModel === QueueModel.MMS_N_POP) suffix = `//${config.populationSize}`;
 
-        const bulk = config.bulkArrivalMode ? `^(${config.minGroupSize},${config.maxGroupSize})` : '';
-        const batch = config.batchServiceMode ? `^(1,${config.maxBatchSize})` : '';
+        const bulk = config.bulkArrivalMode ? `^{(${config.minGroupSize},${config.maxGroupSize})}` : '';
+        const batch = config.batchServiceMode ? `^{(1,${config.maxBatchSize})}` : '';
 
-        return `${a}${bulk}/${s}${batch}/${servers}${suffix}`;
+        return `${a}${bulk} / ${s}${batch} / ${servers}${suffix}`;
     }, [config]);
 
     const documentationContent = useMemo(() => {
@@ -560,7 +561,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                 
                 {infoTab === 'model' ? (
                     <div className="text-center">
-                        <div className="text-3xl font-black text-slate-800 tracking-tighter mb-1">{modelNotation}</div>
+                        <div 
+                            className="text-2xl font-bold text-slate-800 tracking-tighter mb-1 py-2"
+                            dangerouslySetInnerHTML={{ __html: katex.renderToString(modelNotationLatex, { throwOnError: false }) }}
+                        />
                         <div className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Kendall's Notation</div>
                         
                         <div className="mt-4 grid grid-cols-2 gap-2 text-left">
@@ -588,5 +592,3 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
         </div>
     );
 };
-
-export default ConfigPanel;
