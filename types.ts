@@ -13,6 +13,7 @@ export enum ServerState {
 
 /**
  * Represents a specific time segment in a server's activity log.
+ * Used for visualizing the Gantt chart or Timeline.
  */
 export interface ServerStatusSegment {
     /** The state during this segment */
@@ -33,7 +34,7 @@ export enum Environment {
 }
 
 /**
- * Skill types for routing logic.
+ * Skill types for routing logic in multi-skill setups.
  */
 export enum SkillType {
   GENERAL = 'General',
@@ -88,14 +89,25 @@ export enum RoutingStrategy {
     SHORTEST_QUEUE = 'SHORTEST_QUEUE'
 }
 
+/**
+ * Analytical results calculated from Queueing Theory formulas.
+ */
 export interface TheoreticalMetrics {
+  /** Traffic Intensity (Utilization) */
   rho: number;
+  /** Probability of zero customers in system */
   p0: number;
+  /** Expected number in queue */
   lq: number;
+  /** Expected number in system */
   l: number;
+  /** Expected wait time in queue (hours) */
   wq: number;
+  /** Expected total system time (hours) */
   w: number;
+  /** Is the system stable? (rho < 1) */
   isStable: boolean;
+  /** If the result is an approximation (e.g., G/G/s) */
   isApproximate?: boolean;
   approxNote?: string;
   heavyTrafficLq?: number;
@@ -116,30 +128,41 @@ export interface TraceEntry {
     serviceTime: number;
 }
 
+/**
+ * Represents a single entity passing through the system.
+ */
 export interface Customer {
     id: string;
+    /** Arrival timestamp in simulation minutes */
     arrivalTime: number;
+    /** Duration required for service */
     serviceTime: number;
-    priority: number; // 0 or 1
+    /** 1 = VIP, 0 = Standard */
+    priority: number;
+    /** Visual color class */
     color: string;
+    /** Max time willing to wait before reneging */
     patienceTime?: number;
+    /** Required skill for service */
     requiredSkill: SkillType;
+    /** Network Class (A or B) */
     classType: 'A' | 'B';
     
-    // Runtime
+    // Runtime State
     startTime?: number;
     finishTime?: number;
+    /** Timestamp when customer reneged/balked */
     balkTime?: number;
     estimatedWaitTime?: number;
     
-    // Retrial
+    // Retrial Logic
     nextRetryTime?: number;
     isRetrial?: boolean;
 
     // Network Global Tracking
     systemArrivalTime?: number;
 
-    // Workload
+    // Variable Workload (Number of items)
     workloadItems?: number;
 }
 
@@ -148,19 +171,28 @@ export interface DepartedCustomer extends Customer {
     departureTime: number;
 }
 
+/**
+ * Represents a service agent.
+ */
 export interface Server {
     id: number;
     state: ServerState;
+    /** Efficiency multiplier (1.0 = standard, 1.5 = fast) */
     efficiency: number;
     typeLabel: 'Senior' | 'Junior' | 'Normal';
     skills: SkillType[];
     nextBreakdownTime?: number;
     repairTime?: number;
-    queue: Customer[]; // Dedicated queue
+    /** Customers waiting specifically for this server (Dedicated topology) */
+    queue: Customer[]; 
+    /** Customers currently being served (Batch or Single) */
     _activeBatch: Customer[];
-    _activeCustomer?: Customer; // Legacy/Compat
-    currentCustomerId?: string; // Legacy
-    utilizationHistory: number[]; // 0 or 1
+    /** @deprecated Use _activeBatch[0] */
+    _activeCustomer?: Customer; 
+    /** @deprecated Use _activeBatch[0].id */
+    currentCustomerId?: string; 
+    /** Sliding window of utilization for UI */
+    utilizationHistory: number[];
     totalBusyTime: number;
     startTime: number;
     timeline: ServerStatusSegment[];
@@ -202,6 +234,10 @@ export interface CustomerLogEntry {
     workloadItems?: number;
 }
 
+/**
+ * A snapshot of simulation metrics at a specific time t.
+ * Used for charts and historical scrubbing.
+ */
 export interface ChartDataPoint {
     time: number;
     wq: number;
@@ -226,6 +262,9 @@ export interface ChartDataPoint {
     visualSnapshot?: any;
 }
 
+/**
+ * The complete runtime state of the simulation engine.
+ */
 export interface SimulationState {
     currentTime: number;
     queue: Customer[];
@@ -251,6 +290,9 @@ export interface SimulationState {
     events: SimulationEvent[];
 }
 
+/**
+ * The internal configuration object used by the SimulationEngine.
+ */
 export interface SimulationConfig {
     model: QueueModel;
     lambda: number;
@@ -301,7 +343,8 @@ export interface SimulationConfig {
 }
 
 /**
- * Consolidated Configuration for UI State
+ * Consolidated Configuration for UI State.
+ * This drives the ConfigPanel inputs.
  */
 export interface SimulationUIConfig {
     environment: Environment;

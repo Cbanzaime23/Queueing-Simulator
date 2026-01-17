@@ -1,11 +1,14 @@
 
-
 import { NetworkNode, NetworkLink, Customer, Server, ServerState, DistributionType, SkillType, RoutingStrategy, ResourcePool, NetworkRoutingEvent } from './types';
 import { nextDistribution } from './mathUtils';
 
 const CLASS_A_COLOR = 'bg-amber-400 border-2 border-amber-600'; // Gold/VIP
 const CLASS_B_COLOR = 'bg-slate-400 border-2 border-slate-600'; // Silver/Standard
 
+/**
+ * Manages the simulation of a Jackson Network (connected queueing nodes).
+ * Handles stochastic routing, blocking (finite capacity), and shared resources.
+ */
 export class NetworkEngine {
     private nodes: NetworkNode[];
     private links: NetworkLink[];
@@ -81,6 +84,12 @@ export class NetworkEngine {
         this.nextArrivalTimes.set(node.id, this.currentTime + delay);
     }
 
+    /**
+     * Advances the network simulation by dt minutes.
+     * 1. Processes external arrivals (Source Nodes).
+     * 2. Processes service completion and internal routing.
+     * 3. Manages resource pool consumption/release.
+     */
     public tick(dt: number) {
         const newTime = this.currentTime + dt;
         this.recentBlockedLinks = []; // Reset for this tick
@@ -277,6 +286,11 @@ export class NetworkEngine {
         node.queue.push(customer);
     }
 
+    /**
+     * Routes a customer from the current node to the next destination.
+     * Supports Probabilistic routing and Join Shortest Queue (JSQ).
+     * Handles blocking if the destination node is at full capacity.
+     */
     private routeCustomer(customer: Customer, currentNode: NetworkNode) {
         // Find links originating from this node
         const allLinks = this.links.filter(l => l.sourceId === currentNode.id);

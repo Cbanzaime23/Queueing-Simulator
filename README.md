@@ -1,5 +1,5 @@
 
-# M/M/s Queue Simulator Pro
+# M/M/s Queue Simulator Pro v3.7
 
 A rigorous, interactive, and visually rich web application for simulating and analyzing queueing systems. This tool bridges the gap between theoretical queueing models (M/M/s, G/G/s, etc.) and real-time stochastic discrete-event simulation.
 
@@ -42,11 +42,11 @@ The app runs two parallel engines to validate results:
 *   **Breakdowns & Panic Mode**: Introduce random server failures (MTBF/MTTR) or trigger "Panic Mode" (increased efficiency) when queues get too long.
 *   **Batch Processing**: Support for Bulk Arrivals and Batch Service logic.
 
-### 5. High-Fidelity Visualization
-*   **Live "Bank" View**: Watch customers arrive, queue, and get served by animated tellers in real-time.
+### 5. High-Fidelity Visualization & Navigation
+*   **3D Agent Intelligence**: Customers use steering behaviors (Boids-like separation) to realistically navigate around obstacles and other customers.
+*   **Interactive 2D View**: Pan, Zoom, and Center the view to manage large-scale simulations with many servers.
 *   **Dynamic Mood System**: Customers change color (Green $\to$ Red) and shake with anger as they wait longer than their patience threshold.
 *   **Floating Reaction System**: Visual emojis pop up for discrete events like VIP Arrivals (👑), Reneging (😡), Breakdowns (⚠️), and Retrials (🔄).
-*   **Sensitivity Lab**: Perform "What-If" analysis by varying parameters (Servers, Lambda, Service Time) and plotting Cost vs. Waiting Time curves.
 
 ### 6. Network & Data Lab
 *   **Jackson Network Builder**: Design multi-stage stochastic networks with probabilistic routing and blocking.
@@ -62,9 +62,8 @@ The app runs two parallel engines to validate results:
 *   **Language**: TypeScript
 *   **Styling**: Tailwind CSS
 *   **Charting**: Recharts
-*   **Icons**: FontAwesome 6
-*   **Export**: SheetJS (xlsx)
-*   **Build Tool**: Vite (implied environment)
+*   **3D Rendering**: React Three Fiber (Three.js)
+*   **Exports**: SheetJS (xlsx)
 
 ## 🧮 Theoretical Background
 
@@ -77,11 +76,6 @@ $$ \rho = \frac{\lambda}{s \mu} < 1 $$
 ### Sakasegawa's Approximation (G/G/s)
 When non-Poisson distributions are selected, the app automatically switches theoretical benchmarks to this approximation, which accounts for the Coefficient of Variation of arrivals ($C_a$) and service ($C_s$):
 $$ E[L_q]_{G/G/s} \approx E[L_q]_{M/M/s} \cdot \frac{C_a^2 + C_s^2}{2} $$
-
-*   **Deterministic**: $C^2 = 0$
-*   **Erlang-k**: $C^2 = 1/k$
-*   **Uniform**: $C^2 = 1/3$ (approx standardized)
-*   **Exponential**: $C^2 = 1$
 
 ## 🚀 Getting Started
 

@@ -34,6 +34,7 @@ const VISUAL_BALK_DURATION = 15.0;
 /**
  * A Modular Discrete Event Simulation Engine for Queueing Systems.
  * Encapsulates state, event handling, and time progression.
+ * Implements a "next-event" style logic within a fixed time-step tick for React compatibility.
  */
 export class SimulationEngine {
     private state: SimulationState;
@@ -61,6 +62,10 @@ export class SimulationEngine {
         this.config = newConfig;
     }
 
+    /**
+     * Runtime update of server skills.
+     * Allows dynamic changing of agent capabilities without resetting the simulation.
+     */
     public updateServerSkills(serverId: number, newSkills: SkillType[]) {
         const server = this.state.servers.find(s => s.id === serverId);
         if (server) {
@@ -68,6 +73,10 @@ export class SimulationEngine {
         }
     }
 
+    /**
+     * Returns a snapshot of the current state for UI rendering.
+     * Arrays are shallow-cloned to trigger React re-renders.
+     */
     public getState(): SimulationState {
         // Return a copy of the state where history is also cloned.
         // This is critical for React/Recharts to detect updates to the array.
@@ -191,9 +200,13 @@ export class SimulationEngine {
 
         const meanInterArrival = 60 / currentLambda;
         const delay = nextDistribution(this.config.arrivalType, meanInterArrival, this.config.arrivalK);
-        this.nextArrivalTime = this.state.currentTime + delay;
+        this.nextArrivalTime += delay;
     }
 
+    /**
+     * Main Simulation Tick.
+     * Advances time by `deltaTimeMinutes` and processes all events (Arrivals, Departures, etc.)
+     */
     public tick(deltaTimeMinutes: number) {
         // Reset Event Buffer for this tick
         this.state.events = [];
@@ -273,8 +286,6 @@ export class SimulationEngine {
         if (!this.state.isBankClosed) {
             while (this.nextArrivalTime <= newTime) {
                 // Abort if arrival is exactly after close (Only for Generated, Trace might want to finish)
-                // For Trace, we might want to allow it to finish the file even if past "Close Hour" technically,
-                // but let's stick to standard business hours logic for consistency unless Trace Mode overrides.
                 const arrivalAbsHour = this.config.openHour + (this.nextArrivalTime / 60);
                 if (this.config.arrivalType !== DistributionType.TRACE && arrivalAbsHour >= this.config.closeHour) {
                     this.state.isBankClosed = true;
@@ -985,6 +996,10 @@ export class SimulationEngine {
         }
     }
 
+    /**
+     * Attempts to assign available servers to waiting customers.
+     * Handles Skill-Based Routing logic and Batch Service logic.
+     */
     private assignServers() {
         if (this.config.model === QueueModel.MMINF) return; 
 

@@ -1,10 +1,10 @@
 
 # Product Requirements Document (PRD)
-## M/M/s Queue Simulator Pro v3.6
+## M/M/s Queue Simulator Pro v3.7
 
 **Date:** October 26, 2023  
-**Status:** Live / Maintenance  
-**Version:** 3.6  
+**Status:** Live / Active Development  
+**Version:** 3.7  
 
 ---
 
@@ -80,10 +80,12 @@ The user must be able to configure the following parameters:
 *   **Retrials:** Blocked/Reneged customers enter an "Orbit" and retry after a delay.
 
 ### 4.2. Visualization (Single Node)
-*   **Animation:**
-    *   Customers represented as dots/icons moving from entry $\to$ queue $\to$ server $\to$ exit.
-    *   **Mood System:** Customers change color (Green $\to$ Yellow $\to$ Red) and shake based on wait time vs. patience.
-    *   **Event Popups:** Floating icons for events like "VIP Arrival", "Breakdown", "Renege".
+*   **3D Scene:**
+    *   **Agent Navigation Intelligence:** Customers utilize steering behaviors (separation/seek) to realistically navigate around other customers and obstacles while walking.
+    *   **Visual Status:** Customers change color (Green $\to$ Yellow $\to$ Red) and shake based on wait time vs. patience.
+*   **2D Floor Plan:**
+    *   **Interactive Controls:** Pan, Zoom, and Center functionality to manage views with high server counts.
+    *   **Top-down Metrics:** Clear indicators of queue length and server status.
 *   **Real-Time Metrics:**
     *   Wait Time ($W_q$), Queue Length ($L_q$), Throughput, Service Level (SLA).
     *   Comparison of "Actual" (Simulated) vs "Theoretical" (Calculated) values.
@@ -133,12 +135,12 @@ The system validates simulation results against standard queueing theory formula
 *   **Language:** TypeScript (Strict typing).
 *   **Build System:** Vite (ESM).
 *   **Styling:** Tailwind CSS (Utility-first).
-*   **Visualization:** Recharts (Graphing), CSS Keyframes (Animation).
+*   **Visualization:** Recharts (Graphing), CSS Keyframes, Three.js (via React-Three-Fiber).
 
 ### 6.2. Performance
 *   **Simulation Loop:** `requestAnimationFrame` based loop decoupled from React render cycle where possible (using Refs for engine state).
 *   **State Management:** Local state for UI, Class-based `SimulationEngine` for logic to ensure performance during high-speed ticking.
-*   **Responsiveness:** Mobile-responsive layout for controls and visualization canvas.
+*   **Rendering:** Optimized canvas rendering for 3D elements and CSS transforms for 2D elements.
 
 ### 6.3. Data Compatibility
 *   **Input:** CSV files for Trace mode (Format: `Arrival Time, Service Duration`).
@@ -157,10 +159,7 @@ The system validates simulation results against standard queueing theory formula
 *   **Left Panel (Config):** Accordion/Card style inputs for Model, Arrivals, Services, and Advanced Scenarios.
 *   **Center Panel (Visualizer):**
     *   **Metrics Row:** Cards for Wq, Lq, Utilization, Clock.
-    *   **Animation Stage:**
-        *   Left: Arrival/Entrance.
-        *   Center: Service Floor (Server Cards showing status/skills).
-        *   Bottom: Queue Visualization (Snake or Dedicated lines).
+    *   **Animation Stage:** Switchable 2D/3D view with HUD.
 *   **Right/Bottom Panel (Charts):**
     *   Tabbed/Grid layout for Convergence Charts, Queue Dynamics, and Gantt Chart.
     *   Sensitivity Analysis Lab container.
@@ -171,8 +170,7 @@ The system validates simulation results against standard queueing theory formula
 
 ---
 
-## 8. Future Roadmap (Out of Scope for v3.6)
+## 8. Future Roadmap
 *   **Save/Load Config:** Persist complex network setups to LocalStorage or JSON file.
-*   **3D Visualization:** Upgrade from 2D CSS animations to WebGL/Three.js.
 *   **Heatmaps:** Spatial analysis of congestion in Network mode.
 *   **Advanced Cost Models:** Time-dependent cost functions in Sensitivity Lab.
