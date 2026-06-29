@@ -1,5 +1,7 @@
 {
-  "name": "M/M/s Queue Simulator Pro",
-  "description": "A mathematically rigorous M/M/s queueing theory calculator and real-time discrete-event bank simulation tool.",
-  "requestFramePermissions": []
+  "name": "QueuePro SAAS Simulator",
+  "description": "Educational and Industrial Grade Queueing Simulator SAAS for high-fidelity stochastic process modeling.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
 }
