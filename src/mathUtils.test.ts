@@ -1,6 +1,7 @@
 
 import { describe, it, expect } from 'vitest';
-import { calculateEWT, calculateRequiredServers, calculateTheoreticalMetrics, QueueModel, DistributionType } from './mathUtils';
+import { calculateEWT, calculateRequiredServers, calculateTheoreticalMetrics } from '../mathUtils';
+import { QueueModel, DistributionType } from '../types';
 
 describe('Math Utils', () => {
   
