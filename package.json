@@ -14,22 +14,28 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "katex": "^0.17.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "recharts": "^2.12.7",
     "react-dropzone": "^14.2.3",
+    "recharts": "^2.12.7",
+    "three": "^0.185.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.2",
+    "@testing-library/react": "^14.2.1",
+    "@types/katex": "^0.16.8",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
+    "@types/three": "^0.185.1",
     "@vitejs/plugin-react": "^4.2.1",
     "gh-pages": "^6.1.1",
+    "jsdom": "^24.0.0",
     "typescript": "^5.2.2",
     "vite": "^5.2.0",
-    "vitest": "^1.4.0",
-    "jsdom": "^24.0.0",
-    "@testing-library/react": "^14.2.1",
-    "@testing-library/jest-dom": "^6.4.2"
+    "vitest": "^1.4.0"
   }
 }
